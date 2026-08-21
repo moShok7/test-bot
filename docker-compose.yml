@@ -1,0 +1,76 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: test_bot_app
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - mysql
+    networks:
+      - test_bot_network
+
+  nginx:
+    image: nginx:latest
+    container_name: test_bot_nginx
+    ports:
+      - "8090:80"
+    volumes:
+      - ./:/var/www
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - app
+    networks:
+      - test_bot_network
+
+  mysql:
+    image: mariadb:10.4
+    container_name: test_bot_mysql
+    restart: always
+    environment:
+      MYSQL_DATABASE: test_bot
+      MYSQL_USER: test_bot
+      MYSQL_PASSWORD: test_password
+      MYSQL_ROOT_PASSWORD: test_root
+    ports:
+      - "3307:3306"
+    volumes:
+      - test_bot_mysql_data:/var/lib/mysql
+    networks:
+      - test_bot_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: test_bot_phpmyadmin
+    restart: always
+    ports:
+      - "8091:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_USER: root
+      PMA_PASSWORD: test_root
+    depends_on:
+      - mysql
+    networks:
+      - test_bot_network
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: test_bot_telegram
+    command: php artisan telegram:bot
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - mysql
+    restart: always
+    networks:
+      - test_bot_network
+
+networks:
+  test_bot_network:
+
+volumes:
+  test_bot_mysql_data:
