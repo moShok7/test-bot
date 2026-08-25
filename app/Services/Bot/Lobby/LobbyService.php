@@ -3,6 +3,7 @@
 namespace App\Services\Bot\Lobby;
 
 use App\Models\Lobby;
+use App\Models\LobbyNotification;
 use Telegram\Bot\Api;
 
 class LobbyService
@@ -32,7 +33,68 @@ class LobbyService
 
         /*
         |--------------------------------------------------------------------------
-        | Уведомляем игроков
+        | Удаляем уведомления "Новое лобби!"
+        |--------------------------------------------------------------------------
+        */
+
+        $notifications = LobbyNotification::where(
+            'lobby_id',
+            $lobby->id
+        )
+        ->with('telegramUser')
+        ->get();
+
+        foreach ($notifications as $notification) {
+
+            if (!$notification->telegramUser) {
+                continue;
+            }
+
+            try {
+
+                $this->telegram->deleteMessage([
+                    'chat_id' =>
+                        $notification->telegramUser->telegram_id,
+
+                    'message_id' =>
+                        $notification->telegram_message_id,
+                ]);
+
+            } catch (\Throwable $e) {
+
+                \Log::warning(
+                    'Не удалось удалить уведомление о новом лобби',
+                    [
+                        'lobby_id' =>
+                            $lobby->id,
+
+                        'telegram_id' =>
+                            $notification->telegramUser->telegram_id,
+
+                        'message_id' =>
+                            $notification->telegram_message_id,
+
+                        'error' =>
+                            $e->getMessage()
+                    ]
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Удаляем записи уведомлений из БД
+        |--------------------------------------------------------------------------
+        */
+
+        LobbyNotification::where(
+            'lobby_id',
+            $lobby->id
+        )->delete();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Уведомляем игроков о закрытии лобби
         |--------------------------------------------------------------------------
         */
 
@@ -46,6 +108,7 @@ class LobbyService
                 "❌ Лобби #{$lobby->id} было закрыто.";
 
             if ($reason) {
+
                 $text .=
                     "\n\nПричина: {$reason}";
             }
@@ -80,7 +143,7 @@ class LobbyService
 
         /*
         |--------------------------------------------------------------------------
-        | Удаляем всех игроков из lobby_players
+        | Удаляем всех игроков
         |--------------------------------------------------------------------------
         */
 
@@ -88,7 +151,7 @@ class LobbyService
 
         /*
         |--------------------------------------------------------------------------
-        | Удаляем само лобби
+        | Удаляем лобби
         |--------------------------------------------------------------------------
         */
 

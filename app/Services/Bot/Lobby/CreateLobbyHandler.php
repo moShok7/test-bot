@@ -508,36 +508,70 @@ if ($user->username) {
 } elseif ($user->first_name) {
     $creatorName = $user->first_name;
 }
-       $notifications = LobbyNotification::where(
-    'lobby_id',
-    $lobby->id
-)->get();
+/*
+|--------------------------------------------------------------------------
+| Рассылаем уведомления
+|--------------------------------------------------------------------------
+*/
 
-foreach ($notifications as $notification) {
+foreach ($notifyUsers as $notifyUser) {
 
     try {
 
-        $telegram->deleteMessage([
+        $response = $telegram->sendMessage([
             'chat_id' =>
-                $notification->telegram_user_id,
+                $notifyUser->telegram_id,
 
-            'message_id' =>
-                $notification->telegram_message_id,
+            'text' =>
+                "🔔 Новое лобби!\n\n" .
+                "🎮 Лобби #{$lobby->id}\n" .
+                "👑 Создал: {$creatorName}\n" .
+                "👥 Игроков: {$count}/{$lobby->max_players}\n" .
+                "⏳ Ожидание игроков\n\n" .
+                "Хочешь присоединиться?",
+
+            'reply_markup' => json_encode([
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' =>
+                                '🚪 Войти в лобби',
+
+                            'callback_data' =>
+                                'join_lobby_' . $lobby->id
+                        ]
+                    ]
+                ]
+            ])
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Сохраняем сообщение, чтобы потом удалить
+        |--------------------------------------------------------------------------
+        */
+
+        LobbyNotification::create([
+            'lobby_id' =>
+                $lobby->id,
+
+            'telegram_user_id' =>
+                $notifyUser->id,
+
+            'telegram_message_id' =>
+                $response->getMessageId(),
         ]);
 
     } catch (\Throwable $e) {
 
         \Log::warning(
-            'Не удалось удалить уведомление о закрытом лобби',
+            'Не удалось отправить уведомление о новом лобби',
             [
+                'telegram_id' =>
+                    $notifyUser->telegram_id,
+
                 'lobby_id' =>
                     $lobby->id,
-
-                'telegram_id' =>
-                    $notification->telegram_user_id,
-
-                'message_id' =>
-                    $notification->telegram_message_id,
 
                 'error' =>
                     $e->getMessage()
@@ -545,11 +579,6 @@ foreach ($notifications as $notification) {
         );
     }
 }
-
-LobbyNotification::where(
-    'lobby_id',
-    $lobby->id
-)->delete();
 
         /*
         |--------------------------------------------------------------------------
