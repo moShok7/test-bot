@@ -9,7 +9,7 @@ use App\Models\TelegramUser;
 
 use App\Services\Bot\GameProfileHandler;
 use App\Services\Bot\AdminHandler;
-
+use App\Services\Bot\GlobalChatHandler;
 use App\Services\Bot\Lobby\LobbyHandler;
 use App\Services\Bot\Lobby\KickPlayerHandler;
 use App\Services\Bot\Lobby\LobbyService;
@@ -40,7 +40,7 @@ class TelegramBot extends Command
         $lobbyHandler = new LobbyHandler();
 
         $kickPlayerHandler = new KickPlayerHandler();
-
+        $globalChatHandler = new GlobalChatHandler();
         $adminHandler = new AdminHandler();
 
         $lobbyService = new LobbyService($telegram);
@@ -501,10 +501,15 @@ class TelegramBot extends Command
                                 $message,
                                 $telegram
                             )
-                        ) {
+                        ) 
+                        {
 
                             continue;
                         }
+                        $globalChatHandler->handle(
+    $message,
+    $telegram
+);
 
 
                     } catch (\Throwable $e) {
