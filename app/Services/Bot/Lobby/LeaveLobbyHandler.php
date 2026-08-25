@@ -3,13 +3,10 @@
 namespace App\Services\Bot\Lobby;
 
 use App\Models\LobbyPlayer;
+use App\Models\LobbyNotification;
 
 class LeaveLobbyHandler
 {
-    public function __construct(
-        protected LobbyService $lobbyService
-    ) {}
-
     public function handle($message, $telegram): bool
     {
         $text = trim($message->text ?? '');
@@ -24,6 +21,12 @@ class LeaveLobbyHandler
         if (!$telegramId) {
             return false;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Находим игрока в активном лобби
+        |--------------------------------------------------------------------------
+        */
 
         $player = LobbyPlayer::whereHas(
             'telegramUser',
@@ -46,7 +49,7 @@ class LeaveLobbyHandler
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' => "❌ Вы сейчас не состоите в лобби."
+                'text' => '❌ Вы сейчас не состоите в лобби.'
             ]);
 
             return true;
@@ -56,7 +59,7 @@ class LeaveLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Запрет выхода во время игры
+        | Запрет выхода в первые 5 минут игры
         |--------------------------------------------------------------------------
         */
 
@@ -116,8 +119,6 @@ class LeaveLobbyHandler
         |--------------------------------------------------------------------------
         */
 
-        $newHost = null;
-
         if ($wasHost) {
 
             $newHost = LobbyPlayer::where(
@@ -129,7 +130,7 @@ class LeaveLobbyHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Передаём лобби новому хосту
+            | Передаём хостство следующему игроку
             |--------------------------------------------------------------------------
             */
 
@@ -155,20 +156,78 @@ class LeaveLobbyHandler
 
                 /*
                 |--------------------------------------------------------------------------
-                | Игроков больше нет — закрываем лобби
+                | Игроков больше нет
                 |--------------------------------------------------------------------------
                 |
-                | LobbyService::close():
-                | - удалит уведомления "🔔 Новое лобби!"
-                | - удалит записи lobby_notifications
-                | - поставит статус closed
-                |
+                | Удаляем все уведомления "🔔 Новое лобби!"
+                | и закрываем лобби.
+                |--------------------------------------------------------------------------
                 */
 
-                $this->lobbyService->close(
-                    $lobby,
-                    'Все игроки вышли из лобби.'
-                );
+                $notifications = LobbyNotification::where(
+                    'lobby_id',
+                    $lobby->id
+                )->get();
+
+                foreach ($notifications as $notification) {
+
+                    $telegramUser = $notification->telegramUser;
+
+                    if (!$telegramUser) {
+                        continue;
+                    }
+
+                    try {
+
+                        $telegram->deleteMessage([
+                            'chat_id' =>
+                                $telegramUser->telegram_id,
+
+                            'message_id' =>
+                                $notification->telegram_message_id,
+                        ]);
+
+                    } catch (\Throwable $e) {
+
+                        \Log::warning(
+                            'Не удалось удалить уведомление о лобби',
+                            [
+                                'lobby_id' =>
+                                    $lobby->id,
+
+                                'telegram_id' =>
+                                    $telegramUser->telegram_id,
+
+                                'message_id' =>
+                                    $notification->telegram_message_id,
+
+                                'error' =>
+                                    $e->getMessage()
+                            ]
+                        );
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Удаляем записи уведомлений
+                |--------------------------------------------------------------------------
+                */
+
+                LobbyNotification::where(
+                    'lobby_id',
+                    $lobby->id
+                )->delete();
+
+                /*
+                |--------------------------------------------------------------------------
+                | Закрываем лобби
+                |--------------------------------------------------------------------------
+                */
+
+                $lobby->update([
+                    'status' => 'closed'
+                ]);
             }
         }
 
@@ -200,16 +259,36 @@ class LeaveLobbyHandler
 
             foreach ($remainingPlayers as $remainingPlayer) {
 
-                $telegram->sendMessage([
-                    'chat_id' =>
-                        $remainingPlayer->telegramUser->telegram_id,
+                if (!$remainingPlayer->telegramUser) {
+                    continue;
+                }
 
-                    'text' =>
-                        "🚪 Игрок вышел из лобби!\n\n" .
-                        "🎮 {$nickname}\n" .
-                        "🎮 Лобби #{$lobby->id}\n" .
-                        "👥 Игроки: {$playersCount}/{$lobby->max_players}"
-                ]);
+                try {
+
+                    $telegram->sendMessage([
+                        'chat_id' =>
+                            $remainingPlayer->telegramUser->telegram_id,
+
+                        'text' =>
+                            "🚪 Игрок вышел из лобби!\n\n" .
+                            "🎮 {$nickname}\n" .
+                            "🎮 Лобби #{$lobby->id}\n" .
+                            "👥 Игроки: {$playersCount}/{$lobby->max_players}"
+                    ]);
+
+                } catch (\Throwable $e) {
+
+                    \Log::warning(
+                        'Не удалось уведомить игроков о выходе',
+                        [
+                            'lobby_id' =>
+                                $lobby->id,
+
+                            'error' =>
+                                $e->getMessage()
+                        ]
+                    );
+                }
             }
         }
 
