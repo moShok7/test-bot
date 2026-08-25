@@ -6,6 +6,10 @@ use App\Models\LobbyPlayer;
 
 class LeaveLobbyHandler
 {
+    public function __construct(
+        protected LobbyService $lobbyService
+    ) {}
+
     public function handle($message, $telegram): bool
     {
         $text = trim($message->text ?? '');
@@ -56,26 +60,24 @@ class LeaveLobbyHandler
         |--------------------------------------------------------------------------
         */
 
-    if ($lobby->status === 'playing') {
+        if ($lobby->status === 'playing') {
 
-    if (
-        !$lobby->started_at ||
-        $lobby->started_at->gt(now()->subMinutes(5))
-    ) {
+            if (
+                !$lobby->started_at ||
+                $lobby->started_at->gt(now()->subMinutes(5))
+            ) {
 
-        $telegram->sendMessage([
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
 
-            'chat_id' => $chatId,
+                    'text' =>
+                        "🎮 Игра уже началась.\n\n" .
+                        "🚫 Покинуть лобби можно через 5 минут после начала игры."
+                ]);
 
-            'text' =>
-                "🎮 Игра уже началась.\n\n" .
-                "🚫 Покинуть лобби можно через 5 минут после начала игры."
-
-        ]);
-
-        return true;
-    }
-}
+                return true;
+            }
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -85,7 +87,8 @@ class LeaveLobbyHandler
 
         $gameProfile = $player->telegramUser->gameProfile ?? null;
 
-        $nickname = $gameProfile?->game_nickname
+        $nickname =
+            $gameProfile?->game_nickname
             ?? $player->telegramUser->username
             ?? $player->telegramUser->first_name
             ?? 'Игрок';
@@ -117,18 +120,30 @@ class LeaveLobbyHandler
 
         if ($wasHost) {
 
-            $newHost = LobbyPlayer::where('lobby_id', $lobby->id)
-                ->orderBy('id')
-                ->first();
+            $newHost = LobbyPlayer::where(
+                'lobby_id',
+                $lobby->id
+            )
+            ->orderBy('id')
+            ->first();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Передаём лобби новому хосту
+            |--------------------------------------------------------------------------
+            */
 
             if ($newHost) {
 
                 $lobby->update([
-                    'creator_id' => $newHost->telegram_user_id
+                    'creator_id' =>
+                        $newHost->telegram_user_id
                 ]);
 
                 $telegram->sendMessage([
-                    'chat_id' => $newHost->telegramUser->telegram_id,
+                    'chat_id' =>
+                        $newHost->telegramUser->telegram_id,
+
                     'text' =>
                         "👑 Вы стали новым хостом!\n\n" .
                         "🎮 Лобби #{$lobby->id}\n" .
@@ -138,10 +153,22 @@ class LeaveLobbyHandler
 
             } else {
 
-                $lobby->update([
-                    'status' => 'closed'
-                ]);
+                /*
+                |--------------------------------------------------------------------------
+                | Игроков больше нет — закрываем лобби
+                |--------------------------------------------------------------------------
+                |
+                | LobbyService::close():
+                | - удалит уведомления "🔔 Новое лобби!"
+                | - удалит записи lobby_notifications
+                | - поставит статус closed
+                |
+                */
 
+                $this->lobbyService->close(
+                    $lobby,
+                    'Все игроки вышли из лобби.'
+                );
             }
         }
 
@@ -174,7 +201,9 @@ class LeaveLobbyHandler
             foreach ($remainingPlayers as $remainingPlayer) {
 
                 $telegram->sendMessage([
-                    'chat_id' => $remainingPlayer->telegramUser->telegram_id,
+                    'chat_id' =>
+                        $remainingPlayer->telegramUser->telegram_id,
+
                     'text' =>
                         "🚪 Игрок вышел из лобби!\n\n" .
                         "🎮 {$nickname}\n" .
