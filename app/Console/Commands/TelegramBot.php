@@ -37,15 +37,15 @@ class TelegramBot extends Command
 
         $gameProfileHandler = new GameProfileHandler();
 
-        $lobbyService = new LobbyService($telegram);
+$lobbyService = new LobbyService($telegram);
 
 $lobbyHandler = new LobbyHandler($lobbyService);
 
-        $kickPlayerHandler = new KickPlayerHandler();
-        $globalChatHandler = new GlobalChatHandler();
-        $adminHandler = new AdminHandler();
+$kickPlayerHandler = new KickPlayerHandler();
 
-        $lobbyService = new LobbyService($telegram);
+$globalChatHandler = new GlobalChatHandler();
+
+$adminHandler = new AdminHandler();
 
 
         $this->info('Bot started');
