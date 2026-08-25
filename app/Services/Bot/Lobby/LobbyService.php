@@ -110,7 +110,7 @@ class LobbyService
         ->where(
             'updated_at',
             '<=',
-            now()->subMinutes(120)
+            now()->subMinutes(90)
         )
         ->get();
 
@@ -118,7 +118,7 @@ class LobbyService
 
             $this->delete(
                 $lobby,
-                'Лобби неактивно более 120 минут.'
+                'Лобби неактивно более 90 минут.'
             );
         }
     }
