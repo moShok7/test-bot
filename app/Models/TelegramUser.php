@@ -5,7 +5,6 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use App\Models\LobbyPlayer;
 use App\Models\ChatMessage;
-use App\Models\ChatMessage as ModelsChatMessage;
 
 class TelegramUser extends Model
 {
