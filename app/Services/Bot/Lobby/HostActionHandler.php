@@ -310,35 +310,38 @@ class HostActionHandler
         } elseif ($telegramUser->first_name) {
             $creatorName = $telegramUser->first_name;
         }
-                $telegram->sendMessage([
-                    'chat_id' => $playerChatId,
+               $telegram->sendMessage([
+    'chat_id' => $playerChatId,
 
-                    'text' =>
-                        "📤 Актуальное приглашение в лобби\n\n" .
-                        "🎮 Лобби #{$lobby->id}\n" .
-                        "👥 Игроки: {$playersCount}/{$lobby->max_players}\n" .
-                        "🟢 Ищем игроков\n\n" .
-                        "🔗 {$lobbyLink}",
+    'text' =>
+        "📤 Актуальное приглашение в лобби\n\n" .
+        "🎮 Лобби #{$lobby->id}\n" .
+        "👥 Игроки: {$playersCount}/{$lobby->max_players}\n" .
+        "🟢 Ищем игроков",
 
-                    'reply_markup' => json_encode([
-                        'inline_keyboard' => [
-                            [
-                                [
-                                    'text' => '📋 Скопировать приглашение',
-
-                                    'copy_text' => [
-                                        'text' =>
-                                           "🎮 Приглашение в лобби\n\n" .
-                                            "👑 Создал: {$creatorName}\n" .
-                                        "👥 Игроки: {$playersCount}/{$lobby->max_players}\n" .
-                                           "🔗 Войти в лобби:\n" .
-                                            $lobbyLink
-                                    ]
-                                ]
-                            ]
-                        ]
-                    ])
-                ]);
+    'reply_markup' => json_encode([
+        'inline_keyboard' => [
+            [
+                [
+                    'text' => '🚪 Войти в лобби',
+                    'url' => $lobbyLink,
+                ]
+            ],
+            [
+                [
+                    'text' => '📋 Скопировать приглашение',
+                    'copy_text' => [
+                        'text' =>
+                            "🎮 Приглашение в лобби\n\n" .
+                            "👑 Создал: {$creatorName}\n" .
+                            "👥 Игроки: {$playersCount}/{$lobby->max_players}\n\n" .
+                            "Присоединяйся к лобби!"
+                    ]
+                ]
+            ]
+        ]
+    ])
+]);
             }
 
             return true;
