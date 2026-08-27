@@ -124,42 +124,40 @@ class GlobalChatHandler
                 'UTF-8'
             );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Получаем всех пользователей
-        |--------------------------------------------------------------------------
-        */
+       /*
+|--------------------------------------------------------------------------
+| Получаем пользователей, у которых включены уведомления
+|--------------------------------------------------------------------------
+*/
 
-        $users = TelegramUser::where(
-            'telegram_id',
-            '!=',
-            $telegramUserId
-        )->get();
+$users = TelegramUser::where(
+    'telegram_id',
+    '!=',
+    $telegramUserId
+)
+->where('chat_notifications', true)
+->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Рассылаем сообщение
-        |--------------------------------------------------------------------------
-        */
+/*
+|--------------------------------------------------------------------------
+| Рассылаем сообщение
+|--------------------------------------------------------------------------
+*/
 
-        foreach ($users as $recipient) {
-            try {
-                $telegram->sendMessage([
-                    'chat_id' => $recipient->telegram_id,
-                    'text' => $chatText,
-                    'parse_mode' => 'HTML',
-                ]);
-            } catch (\Throwable $e) {
-                \Log::warning(
-                    'Global chat send error',
-                    [
-                        'telegram_user_id' => $recipient->id,
-                        'message' => $e->getMessage(),
-                    ]
-                );
-            }
-        }
-
-        return true;
+foreach ($users as $recipient) {
+    try {
+        $telegram->sendMessage([
+            'chat_id' => $recipient->telegram_id,
+            'text' => $chatText,
+            'parse_mode' => 'HTML',
+        ]);
+    } catch (\Throwable $e) {
+        \Log::warning(
+            'Global chat send error',
+            [
+                'telegram_user_id' => $recipient->id,
+                'message' => $e->getMessage(),
+            ]
+        );
     }
 }

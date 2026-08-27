@@ -11,8 +11,12 @@ class TelegramUser extends Model
     protected $fillable = [
         'telegram_id',
         'username',
-        'first_name'
+        'first_name',
+         'chat_notifications'
     ];
+    protected $casts = [
+    'chat_notifications' => 'boolean',
+];
     public function gameProfile()
     {
         return $this->hasOne(GameProfile::class);
