@@ -219,17 +219,15 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $message =
-                            $update->message;
+                        $message = $update->message;
 
                         if (!$message) {
                             continue;
                         }
 
-                        $text =
-                            trim(
-                                $message->text ?? ''
-                            );
+                        $text = trim(
+                            $message->text ?? ''
+                        );
 
                         /*
                         |--------------------------------------------------------------------------
@@ -237,8 +235,7 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $user =
-                            $message->from;
+                        $user = $message->from;
 
                         if (
                             $user &&
@@ -323,8 +320,8 @@ class TelegramBot extends Command
                         */
 
                         if ($text === '/start') {
-                            $telegram->sendMessage([
 
+                            $telegram->sendMessage([
                                 'chat_id' =>
                                     $message->chat->id,
 
@@ -334,7 +331,6 @@ class TelegramBot extends Command
 
                                 'reply_markup' =>
                                     json_encode([
-
                                         'keyboard' => [
 
                                             [
@@ -342,7 +338,6 @@ class TelegramBot extends Command
                                                     'text' =>
                                                         '➕ Создать лобби'
                                                 ],
-
                                                 [
                                                     'text' =>
                                                         '🔍 Найти лобби'
@@ -385,7 +380,6 @@ class TelegramBot extends Command
                         ) {
 
                             $telegram->sendMessage([
-
                                 'chat_id' =>
                                     $message->chat->id,
 
@@ -394,7 +388,6 @@ class TelegramBot extends Command
 
                                 'reply_markup' =>
                                     json_encode([
-
                                         'keyboard' => [
 
                                             [
@@ -402,7 +395,6 @@ class TelegramBot extends Command
                                                     'text' =>
                                                         '➕ Создать лобби'
                                                 ],
-
                                                 [
                                                     'text' =>
                                                         '🔍 Найти лобби'
@@ -445,7 +437,6 @@ class TelegramBot extends Command
                                 $telegram
                             )
                         ) {
-
                             continue;
                         }
 
@@ -461,7 +452,6 @@ class TelegramBot extends Command
                                 $telegram
                             )
                         ) {
-
                             continue;
                         }
 
@@ -477,7 +467,6 @@ class TelegramBot extends Command
                                 $telegram
                             )
                         ) {
-
                             continue;
                         }
 
@@ -529,3 +518,4 @@ class TelegramBot extends Command
         }
     }
 }
+
