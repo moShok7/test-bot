@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('telegram_users', function (Blueprint $table) {
-            //
+             $table->boolean('chat_notifications')->default(true);
         });
     }
 
@@ -22,7 +22,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('telegram_users', function (Blueprint $table) {
-              $table->boolean('chat_notifications')->default(true);
+            
         });
     }
 };
