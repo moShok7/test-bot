@@ -67,7 +67,12 @@ class HostActionHandler
                             [
                                 'text' => '🎮 Моё лобби'
                             ]
-                        ]
+                        ],
+                        [
+    [
+        'text' => '⚙️ Настройки'
+    ]
+]
                     ],
 
                     'resize_keyboard' => true

@@ -6,7 +6,7 @@ use Illuminate\Console\Command;
 use Telegram\Bot\Api;
 
 use App\Models\TelegramUser;
-
+use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\GameProfileHandler;
 use App\Services\Bot\AdminHandler;
 use App\Services\Bot\GlobalChatHandler;
@@ -14,20 +14,17 @@ use App\Services\Bot\Lobby\LobbyHandler;
 use App\Services\Bot\Lobby\KickPlayerHandler;
 use App\Services\Bot\Lobby\LobbyService;
 
-
 class TelegramBot extends Command
 {
     protected $signature = 'telegram:bot';
 
     protected $description = 'Telegram bot';
 
-
     public function handle()
     {
         $telegram = new Api(
             env('TELEGRAM_BOT_TOKEN')
         );
-
 
         /*
         |--------------------------------------------------------------------------
@@ -37,22 +34,21 @@ class TelegramBot extends Command
 
         $gameProfileHandler = new GameProfileHandler();
 
-$lobbyService = new LobbyService($telegram);
+        $lobbyService = new LobbyService($telegram);
 
-$lobbyHandler = new LobbyHandler($lobbyService);
+        $settingsHandler = new SettingsHandler();
 
-$kickPlayerHandler = new KickPlayerHandler();
+        $lobbyHandler = new LobbyHandler($lobbyService);
 
-$globalChatHandler = new GlobalChatHandler();
+        $kickPlayerHandler = new KickPlayerHandler();
 
-$adminHandler = new AdminHandler();
+        $globalChatHandler = new GlobalChatHandler();
 
+        $adminHandler = new AdminHandler();
 
         $this->info('Bot started');
 
-
         $offset = 0;
-
 
         /*
         |--------------------------------------------------------------------------
@@ -72,7 +68,6 @@ $adminHandler = new AdminHandler();
 
                 $lobbyService->deleteExpiredWaitingLobbies();
 
-
                 /*
                 |--------------------------------------------------------------------------
                 | Получаем Telegram updates
@@ -84,13 +79,11 @@ $adminHandler = new AdminHandler();
                     'timeout' => 30,
                 ]);
 
-
                 foreach ($updates as $update) {
 
                     try {
 
                         $offset = $update->updateId + 1;
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -105,52 +98,38 @@ $adminHandler = new AdminHandler();
                             $callbackData =
                                 $callback->data ?? '';
 
-
                             /*
                             |--------------------------------------------------------------------------
                             | ❌ Кик игрока
                             |--------------------------------------------------------------------------
-                            |
-                            | callback_data:
-                            |
-                            | kick_player_123456789
-                            |
-                            |--------------------------------------------------------------------------
                             */
 
-                         if (
-    str_starts_with(
-        $callbackData,
-        'kick_player_'
-    )
-) {
+                            if (
+                                str_starts_with(
+                                    $callbackData,
+                                    'kick_player_'
+                                )
+                            ) {
 
-    \Log::info('KICK CALLBACK RECEIVED', [
-        'data' => $callbackData,
-        'callback_id' => $callback->id ?? null,
-        'from_id' => $callback->from->id ?? null,
-    ]);
+                                \Log::info('KICK CALLBACK RECEIVED', [
+                                    'data' => $callbackData,
+                                    'callback_id' => $callback->id ?? null,
+                                    'from_id' => $callback->from->id ?? null,
+                                ]);
 
-    $kickPlayerHandler->handle(
-        (object) [
-            'callback_query' => $callback
-        ],
-        $telegram
-    );
+                                $kickPlayerHandler->handle(
+                                    (object) [
+                                        'callback_query' => $callback
+                                    ],
+                                    $telegram
+                                );
 
-    continue;
-}
-
+                                continue;
+                            }
 
                             /*
                             |--------------------------------------------------------------------------
                             | 🚪 Вход в лобби через inline кнопку
-                            |--------------------------------------------------------------------------
-                            |
-                            | callback_data:
-                            |
-                            | join_lobby_50
-                            |
                             |--------------------------------------------------------------------------
                             */
 
@@ -167,10 +146,8 @@ $adminHandler = new AdminHandler();
                                     $callbackData
                                 );
 
-
                                 $message =
                                     $callback->message;
-
 
                                 /*
                                 |--------------------------------------------------------------------------
@@ -181,7 +158,6 @@ $adminHandler = new AdminHandler();
                                 $message['from'] =
                                     $callback->from;
 
-
                                 /*
                                 |--------------------------------------------------------------------------
                                 | Имитируем обычную кнопку
@@ -191,12 +167,10 @@ $adminHandler = new AdminHandler();
                                 $message['text'] =
                                     '🚪 Войти #' . $lobbyId;
 
-
                                 $lobbyHandler->handle(
                                     $message,
                                     $telegram
                                 );
-
 
                                 /*
                                 |--------------------------------------------------------------------------
@@ -222,10 +196,8 @@ $adminHandler = new AdminHandler();
                                     );
                                 }
 
-
                                 continue;
                             }
-
 
                             /*
                             |--------------------------------------------------------------------------
@@ -238,10 +210,8 @@ $adminHandler = new AdminHandler();
                                 $telegram
                             );
 
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -252,17 +222,14 @@ $adminHandler = new AdminHandler();
                         $message =
                             $update->message;
 
-
                         if (!$message) {
                             continue;
                         }
-
 
                         $text =
                             trim(
                                 $message->text ?? ''
                             );
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -273,19 +240,16 @@ $adminHandler = new AdminHandler();
                         $user =
                             $message->from;
 
-
                         if (
                             $user &&
                             $user->id
                         ) {
 
                             TelegramUser::updateOrCreate(
-
                                 [
                                     'telegram_id' =>
                                         $user->id,
                                 ],
-
                                 [
                                     'username' =>
                                         $user->username,
@@ -296,6 +260,20 @@ $adminHandler = new AdminHandler();
                             );
                         }
 
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ⚙️ Настройки
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            $settingsHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
 
                         /*
                         |--------------------------------------------------------------------------
@@ -317,10 +295,8 @@ $adminHandler = new AdminHandler();
                                 $telegram
                             );
 
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -337,10 +313,8 @@ $adminHandler = new AdminHandler();
                                 $telegram
                             );
 
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -349,7 +323,6 @@ $adminHandler = new AdminHandler();
                         */
 
                         if ($text === '/start') {
-
                             $telegram->sendMessage([
 
                                 'chat_id' =>
@@ -365,7 +338,6 @@ $adminHandler = new AdminHandler();
                                         'keyboard' => [
 
                                             [
-
                                                 [
                                                     'text' =>
                                                         '➕ Создать лобби'
@@ -375,16 +347,20 @@ $adminHandler = new AdminHandler();
                                                     'text' =>
                                                         '🔍 Найти лобби'
                                                 ]
-
                                             ],
 
                                             [
-
                                                 [
                                                     'text' =>
                                                         '🎮 Моё лобби'
                                                 ]
+                                            ],
 
+                                            [
+                                                [
+                                                    'text' =>
+                                                        '⚙️ Настройки'
+                                                ]
                                             ]
 
                                         ],
@@ -394,10 +370,8 @@ $adminHandler = new AdminHandler();
                                     ])
                             ]);
 
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -424,7 +398,6 @@ $adminHandler = new AdminHandler();
                                         'keyboard' => [
 
                                             [
-
                                                 [
                                                     'text' =>
                                                         '➕ Создать лобби'
@@ -434,16 +407,20 @@ $adminHandler = new AdminHandler();
                                                     'text' =>
                                                         '🔍 Найти лобби'
                                                 ]
-
                                             ],
 
                                             [
-
                                                 [
                                                     'text' =>
                                                         '🎮 Моё лобби'
                                                 ]
+                                            ],
 
+                                            [
+                                                [
+                                                    'text' =>
+                                                        '⚙️ Настройки'
+                                                ]
                                             ]
 
                                         ],
@@ -453,10 +430,8 @@ $adminHandler = new AdminHandler();
                                     ])
                             ]);
 
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -474,7 +449,6 @@ $adminHandler = new AdminHandler();
                             continue;
                         }
 
-
                         /*
                         |--------------------------------------------------------------------------
                         | Игровой профиль
@@ -491,7 +465,6 @@ $adminHandler = new AdminHandler();
                             continue;
                         }
 
-
                         /*
                         |--------------------------------------------------------------------------
                         | Лобби
@@ -503,23 +476,27 @@ $adminHandler = new AdminHandler();
                                 $message,
                                 $telegram
                             )
-                        ) 
-                        {
+                        ) {
 
                             continue;
                         }
-                        $globalChatHandler->handle(
-    $message,
-    $telegram
-);
 
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Глобальный чат
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $globalChatHandler->handle(
+                            $message,
+                            $telegram
+                        );
 
                     } catch (\Throwable $e) {
 
                         \Log::error(
                             'Update error',
                             [
-
                                 'message' =>
                                     $e->getMessage(),
 
@@ -528,28 +505,22 @@ $adminHandler = new AdminHandler();
 
                                 'line' =>
                                     $e->getLine(),
-
                             ]
                         );
-
 
                         continue;
                     }
                 }
-
 
             } catch (\Throwable $e) {
 
                 \Log::error(
                     'Telegram connection error',
                     [
-
                         'message' =>
                             $e->getMessage(),
-
                     ]
                 );
-
 
                 sleep(5);
 
