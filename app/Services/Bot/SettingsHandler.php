@@ -23,6 +23,104 @@ class SettingsHandler
 
         /*
         |--------------------------------------------------------------------------
+        | 🎨 Режим выбора иконки
+        |--------------------------------------------------------------------------
+        |
+        | Этот блок должен находиться ДО обработки обычных кнопок.
+        | Тогда отправленный emoji не попадёт в GlobalChatHandler.
+        |
+        */
+
+        if ($user && $user->chat_icon_selection) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | ❌ Отмена
+            |--------------------------------------------------------------------------
+            */
+
+            if ($text === '❌ Отмена') {
+
+                $user->update([
+                    'chat_icon_selection' => false,
+                ]);
+
+                $this->showProfile(
+                    $message,
+                    $telegram,
+                    $user
+                );
+
+                return true;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Проверяем emoji
+            |--------------------------------------------------------------------------
+            */
+
+            if ($this->isValidEmoji($text)) {
+
+                $user->update([
+                    'chat_icon' => $text,
+                    'chat_icon_selection' => false,
+                ]);
+
+                /*
+                | Обновляем модель после сохранения
+                */
+
+                $user->refresh();
+
+                $telegram->sendMessage([
+                    'chat_id' => $message->chat->id,
+
+                    'text' =>
+                        "✅ Иконка изменена\n\n" .
+                        "Теперь твоя иконка: {$user->chat_icon}",
+
+                    'reply_markup' => $this->profileKeyboard(),
+                ]);
+
+                return true;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Неверный emoji
+            |--------------------------------------------------------------------------
+            */
+
+            $telegram->sendMessage([
+                'chat_id' => $message->chat->id,
+
+                'text' =>
+                    "❌ Не удалось распознать emoji.\n\n" .
+                    "Отправь один emoji.\n\n" .
+                    "Например: 🔥",
+
+                'reply_markup' => json_encode([
+                    'keyboard' => [
+                        [
+                            ['text' => '❌ Отмена'],
+                        ],
+                    ],
+                    'resize_keyboard' => true,
+                ]),
+            ]);
+
+            /*
+            | Очень важно:
+            | сообщение полностью обработано,
+            | поэтому GlobalChatHandler его не получит.
+            */
+
+            return true;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
         | ⚙️ Настройки
         |--------------------------------------------------------------------------
         */
@@ -78,91 +176,28 @@ class SettingsHandler
         |--------------------------------------------------------------------------
         */
 
-       if ($text === '🎨 Изменить иконку') {
+        if ($text === '🎨 Изменить иконку') {
 
-    if ($user) {
-        $user->update([
-            'chat_icon_selection' => true,
-        ]);
-    }
-
-    $telegram->sendMessage([
-        'chat_id' => $message->chat->id,
-
-        'text' =>
-            "🎨 Новая иконка\n\n" .
-            "Отправь мне любой emoji, который хочешь " .
-            "использовать как свою иконку.\n\n" .
-            "Например: 🔥",
-
-        'reply_markup' => json_encode([
-            'keyboard' => [
-                [
-                    ['text' => '❌ Отмена'],
-                ],
-            ],
-            'resize_keyboard' => true,
-        ]),
-    ]);
-
-    return true;
-}
-
-        /*
-        |--------------------------------------------------------------------------
-        | ❌ Отмена выбора иконки
-        |--------------------------------------------------------------------------
-        */
-
-        if ($text === '❌ Отмена') {
-
-            $this->showProfile(
-                $message,
-                $telegram,
-                $user
-            );
-
-            return true;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем emoji
-        |--------------------------------------------------------------------------
-        |
-        | Если пользователь находится в режиме выбора иконки,
-        | сохраняем отправленный emoji.
-        |
-        */
-
-        if ($user && $user->chat_icon_selection) {
-
-            if ($this->isValidEmoji($text)) {
-
-                $user->update([
-                    'chat_icon' => $text,
-                    'chat_icon_selection' => false,
-                ]);
-
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-
-                    'text' =>
-                        "✅ Иконка изменена\n\n" .
-                        "Теперь твоя иконка: {$text}",
-
-                    'reply_markup' => $this->profileKeyboard(),
-                ]);
-
+            if (!$user) {
                 return true;
             }
+
+            /*
+            | Включаем режим выбора иконки
+            */
+
+            $user->update([
+                'chat_icon_selection' => true,
+            ]);
 
             $telegram->sendMessage([
                 'chat_id' => $message->chat->id,
 
                 'text' =>
-                    "❌ Не удалось распознать emoji.\n\n" .
-                    "Отправь один emoji, например: 🔥",
+                    "🎨 Новая иконка\n\n" .
+                    "Отправь мне любой emoji, который хочешь " .
+                    "использовать как свою иконку.\n\n" .
+                    "Например: 🔥",
 
                 'reply_markup' => json_encode([
                     'keyboard' => [
@@ -176,6 +211,7 @@ class SettingsHandler
 
             return true;
         }
+
         /*
         |--------------------------------------------------------------------------
         | 💬 Уведомления чата
@@ -202,6 +238,7 @@ class SettingsHandler
         if ($text === '🟢 Включить уведомления') {
 
             if ($user) {
+
                 $user->update([
                     'chat_notifications' => true,
                 ]);
@@ -214,7 +251,8 @@ class SettingsHandler
                     "💬 Уведомления чата\n\n" .
                     "🟢 Уведомления включены.",
 
-                'reply_markup' => $this->chatNotificationKeyboard(),
+                'reply_markup' =>
+                    $this->chatNotificationKeyboard(),
             ]);
 
             return true;
@@ -229,6 +267,7 @@ class SettingsHandler
         if ($text === '🔴 Выключить уведомления') {
 
             if ($user) {
+
                 $user->update([
                     'chat_notifications' => false,
                 ]);
@@ -241,8 +280,26 @@ class SettingsHandler
                     "💬 Уведомления чата\n\n" .
                     "🔴 Уведомления выключены.",
 
-                'reply_markup' => $this->chatNotificationKeyboard(),
+                'reply_markup' =>
+                    $this->chatNotificationKeyboard(),
             ]);
+
+            return true;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | ❌ Отмена
+        |--------------------------------------------------------------------------
+        */
+
+        if ($text === '❌ Отмена') {
+
+            $this->showProfile(
+                $message,
+                $telegram,
+                $user
+            );
 
             return true;
         }
@@ -266,6 +323,7 @@ class SettingsHandler
         return false;
     }
 
+
     /*
     |--------------------------------------------------------------------------
     | 👤 Профиль
@@ -278,11 +336,15 @@ class SettingsHandler
         $user
     ): void {
 
+        if (!$user) {
+            return;
+        }
+
         $name = $user->username
             ? '@' . $user->username
             : ($user->first_name ?? 'Пользователь');
 
-        $icon = $user->chat_icon ?? '🟠';
+        $icon = $user->chat_icon ?: '🟠';
 
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
@@ -292,13 +354,15 @@ class SettingsHandler
                 "Имя: {$name}\n" .
                 "Иконка: {$icon}",
 
-            'reply_markup' => $this->profileKeyboard(),
+            'reply_markup' =>
+                $this->profileKeyboard(),
         ]);
     }
 
+
     /*
     |--------------------------------------------------------------------------
-    | Проверка emoji
+    | 🎨 Проверка emoji
     |--------------------------------------------------------------------------
     */
 
@@ -309,7 +373,7 @@ class SettingsHandler
         }
 
         /*
-        | Не принимаем длинный текст.
+        | Не разрешаем отправлять обычный текст.
         */
 
         if (mb_strlen($text) > 8) {
@@ -317,7 +381,11 @@ class SettingsHandler
         }
 
         /*
-        | Проверяем наличие emoji Unicode.
+        | Emoji Unicode.
+        |
+        | Поддерживает обычные emoji:
+        | 🔥 ❤️ 😂 🟠 👑 💀 🚀
+        |
         */
 
         return preg_match(
@@ -325,6 +393,7 @@ class SettingsHandler
             $text
         ) === 1;
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -346,6 +415,7 @@ class SettingsHandler
             'resize_keyboard' => true,
         ]);
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -382,6 +452,7 @@ class SettingsHandler
             ]),
         ]);
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -420,6 +491,7 @@ class SettingsHandler
         ]);
     }
 
+
     /*
     |--------------------------------------------------------------------------
     | 💬 Уведомления чата
@@ -446,9 +518,11 @@ class SettingsHandler
                 "Статус: {$status}\n\n" .
                 "Получать уведомления о новых сообщениях в чате?",
 
-            'reply_markup' => $this->chatNotificationKeyboard(),
+            'reply_markup' =>
+                $this->chatNotificationKeyboard(),
         ]);
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -473,6 +547,7 @@ class SettingsHandler
             'resize_keyboard' => true,
         ]);
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -511,3 +586,4 @@ class SettingsHandler
         ]);
     }
 }
+
