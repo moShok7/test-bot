@@ -124,15 +124,15 @@ class GlobalChatHandler
         |
         */
 
-        $chatText =
-            $authorLink
-            . "\n"
-            . "👤 "
-            . htmlspecialchars(
-                $text,
-                ENT_QUOTES,
-                'UTF-8'
-            );
+    $chatText =
+    $authorLink
+    . "\n"
+    . ($user->chat_icon ?? '🟠') . " "
+    . htmlspecialchars(
+        $text,
+        ENT_QUOTES,
+        'UTF-8'
+    );
 
         /*
         |--------------------------------------------------------------------------

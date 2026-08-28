@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('telegram_users', function (Blueprint $table) {
-              $table->string('chat_icon', 20)->default('👤')->after('chat_notifications');
+              $table->string('chat_icon', 20)->default('🟠')->after('chat_notifications');
         });
     }
 
