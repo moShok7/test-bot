@@ -12,7 +12,8 @@ class TelegramUser extends Model
         'telegram_id',
         'username',
         'first_name',
-         'chat_notifications'
+         'chat_notifications',
+          'chat_icon'
     ];
     protected $casts = [
     'chat_notifications' => 'boolean',
