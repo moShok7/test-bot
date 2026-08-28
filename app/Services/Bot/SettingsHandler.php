@@ -367,32 +367,19 @@ class SettingsHandler
     */
 
     private function isValidEmoji(string $text): bool
-    {
-        if ($text === '') {
-            return false;
-        }
-
-        /*
-        | Не разрешаем отправлять обычный текст.
-        */
-
-        if (mb_strlen($text) > 8) {
-            return false;
-        }
-
-        /*
-        | Emoji Unicode.
-        |
-        | Поддерживает обычные emoji:
-        | 🔥 ❤️ 😂 🟠 👑 💀 🚀
-        |
-        */
-
-        return preg_match(
-            '/[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]/u',
-            $text
-        ) === 1;
+{
+    // emoji должен быть одним символом или одной комбинацией
+    if (mb_strlen($text) > 10) {
+        return false;
     }
+
+    // универсальный emoji‑регекс
+    return preg_match(
+        '/\p{Emoji}/u',
+        $text
+    ) === 1;
+}
+
 
 
     /*
