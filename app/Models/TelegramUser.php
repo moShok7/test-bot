@@ -13,10 +13,12 @@ class TelegramUser extends Model
         'username',
         'first_name',
          'chat_notifications',
+         'chat_icon_selection',
           'chat_icon'
     ];
     protected $casts = [
     'chat_notifications' => 'boolean',
+    'chat_icon_selection' => 'boolean',
 ];
     public function gameProfile()
     {
