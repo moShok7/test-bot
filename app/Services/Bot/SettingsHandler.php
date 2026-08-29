@@ -23,22 +23,13 @@ class SettingsHandler
 
         /*
         |--------------------------------------------------------------------------
-        | 🎨 Режим выбора иконки
+        | 🎨 Выбор иконки
         |--------------------------------------------------------------------------
-        |
-        | Этот блок должен находиться ДО обработки обычных кнопок.
-        | Тогда отправленный emoji не попадёт в GlobalChatHandler.
-        |
         */
 
         if ($user && $user->chat_icon_selection) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | ❌ Отмена
-            |--------------------------------------------------------------------------
-            */
-
+            // Отмена
             if ($text === '❌ Отмена') {
 
                 $user->update([
@@ -54,67 +45,24 @@ class SettingsHandler
                 return true;
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Проверяем emoji
-            |--------------------------------------------------------------------------
-            */
+            // Сохраняем то, что отправил пользователь
+            $user->update([
+                'chat_icon' => $text,
+                'chat_icon_selection' => false,
+            ]);
 
-            if ($this->isValidEmoji($text)) {
-
-                $user->update([
-                    'chat_icon' => $text,
-                    'chat_icon_selection' => false,
-                ]);
-
-                /*
-                | Обновляем модель после сохранения
-                */
-
-                $user->refresh();
-
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-
-                    'text' =>
-                        "✅ Иконка изменена\n\n" .
-                        "Теперь твоя иконка: {$user->chat_icon}",
-
-                    'reply_markup' => $this->profileKeyboard(),
-                ]);
-
-                return true;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Неверный emoji
-            |--------------------------------------------------------------------------
-            */
+            $user->refresh();
 
             $telegram->sendMessage([
                 'chat_id' => $message->chat->id,
 
                 'text' =>
-                    "❌ Не удалось распознать emoji.\n\n" .
-                    "Отправь один emoji.\n\n" .
-                    "Например: 🔥",
+                    "✅ Иконка изменена\n\n" .
+                    "Теперь твоя иконка: {$user->chat_icon}",
 
-                'reply_markup' => json_encode([
-                    'keyboard' => [
-                        [
-                            ['text' => '❌ Отмена'],
-                        ],
-                    ],
-                    'resize_keyboard' => true,
-                ]),
+                'reply_markup' =>
+                    $this->profileKeyboard(),
             ]);
-
-            /*
-            | Очень важно:
-            | сообщение полностью обработано,
-            | поэтому GlobalChatHandler его не получит.
-            */
 
             return true;
         }
@@ -182,10 +130,6 @@ class SettingsHandler
                 return true;
             }
 
-            /*
-            | Включаем режим выбора иконки
-            */
-
             $user->update([
                 'chat_icon_selection' => true,
             ]);
@@ -202,7 +146,9 @@ class SettingsHandler
                 'reply_markup' => json_encode([
                     'keyboard' => [
                         [
-                            ['text' => '❌ Отмена'],
+                            [
+                                'text' => '❌ Отмена',
+                            ],
                         ],
                     ],
                     'resize_keyboard' => true,
@@ -238,7 +184,6 @@ class SettingsHandler
         if ($text === '🟢 Включить уведомления') {
 
             if ($user) {
-
                 $user->update([
                     'chat_notifications' => true,
                 ]);
@@ -267,7 +212,6 @@ class SettingsHandler
         if ($text === '🔴 Выключить уведомления') {
 
             if ($user) {
-
                 $user->update([
                     'chat_notifications' => false,
                 ]);
@@ -362,28 +306,6 @@ class SettingsHandler
 
     /*
     |--------------------------------------------------------------------------
-    | 🎨 Проверка emoji
-    |--------------------------------------------------------------------------
-    */
-
-    private function isValidEmoji(string $text): bool
-{
-    // emoji должен быть одним символом или одной комбинацией
-    if (mb_strlen($text) > 10) {
-        return false;
-    }
-
-    // универсальный emoji‑регекс
-    return preg_match(
-        '/\p{Emoji}/u',
-        $text
-    ) === 1;
-}
-
-
-
-    /*
-    |--------------------------------------------------------------------------
     | Кнопки профиля
     |--------------------------------------------------------------------------
     */
@@ -393,10 +315,14 @@ class SettingsHandler
         return json_encode([
             'keyboard' => [
                 [
-                    ['text' => '🎨 Изменить иконку'],
+                    [
+                        'text' => '🎨 Изменить иконку',
+                    ],
                 ],
                 [
-                    ['text' => '⬅️ Назад'],
+                    [
+                        'text' => '⬅️ Назад',
+                    ],
                 ],
             ],
             'resize_keyboard' => true,
@@ -426,13 +352,19 @@ class SettingsHandler
             'reply_markup' => json_encode([
                 'keyboard' => [
                     [
-                        ['text' => '🔔 Уведомления'],
+                        [
+                            'text' => '🔔 Уведомления',
+                        ],
                     ],
                     [
-                        ['text' => '👤 Профиль'],
+                        [
+                            'text' => '👤 Профиль',
+                        ],
                     ],
                     [
-                        ['text' => '⬅️ Назад'],
+                        [
+                            'text' => '⬅️ Назад',
+                        ],
                     ],
                 ],
                 'resize_keyboard' => true,
@@ -467,10 +399,14 @@ class SettingsHandler
             'reply_markup' => json_encode([
                 'keyboard' => [
                     [
-                        ['text' => '💬 Уведомления чата'],
+                        [
+                            'text' => '💬 Уведомления чата',
+                        ],
                     ],
                     [
-                        ['text' => '⬅️ Назад'],
+                        [
+                            'text' => '⬅️ Назад',
+                        ],
                     ],
                 ],
                 'resize_keyboard' => true,
@@ -522,13 +458,19 @@ class SettingsHandler
         return json_encode([
             'keyboard' => [
                 [
-                    ['text' => '🟢 Включить уведомления'],
+                    [
+                        'text' => '🟢 Включить уведомления',
+                    ],
                 ],
                 [
-                    ['text' => '🔴 Выключить уведомления'],
+                    [
+                        'text' => '🔴 Выключить уведомления',
+                    ],
                 ],
                 [
-                    ['text' => '⬅️ Назад'],
+                    [
+                        'text' => '⬅️ Назад',
+                    ],
                 ],
             ],
             'resize_keyboard' => true,
@@ -555,17 +497,27 @@ class SettingsHandler
             'reply_markup' => json_encode([
                 'keyboard' => [
                     [
-                        ['text' => '➕ Создать лобби'],
-                        ['text' => '🔍 Найти лобби'],
+                        [
+                            'text' => '➕ Создать лобби',
+                        ],
+                        [
+                            'text' => '🔍 Найти лобби',
+                        ],
                     ],
                     [
-                        ['text' => '🎮 Моё лобби'],
+                        [
+                            'text' => '🎮 Моё лобби',
+                        ],
                     ],
                     [
-                        ['text' => '👤 Профиль'],
+                        [
+                            'text' => '👤 Профиль',
+                        ],
                     ],
                     [
-                        ['text' => '⚙️ Настройки'],
+                        [
+                            'text' => '⚙️ Настройки',
+                        ],
                     ],
                 ],
                 'resize_keyboard' => true,
@@ -573,4 +525,3 @@ class SettingsHandler
         ]);
     }
 }
-
