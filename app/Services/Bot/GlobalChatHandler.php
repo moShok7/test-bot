@@ -127,7 +127,7 @@ class GlobalChatHandler
     $chatText =
     $authorLink
     . "\n"
-    . ($user->chat_icon ?? '🟠') . " "
+    . ($user->chat_icon ?? '🟠') . ": "
     . htmlspecialchars(
         $text,
         ENT_QUOTES,
