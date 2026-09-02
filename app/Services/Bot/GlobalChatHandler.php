@@ -3,9 +3,11 @@
 namespace App\Services\Bot;
 
 use App\Models\ChatMessage;
+use App\Models\ChatMessageDelivery;
 use App\Models\TelegramUser;
-use Telegram\Bot\Api;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Telegram\Bot\Api;
 
 class GlobalChatHandler
 {
@@ -64,16 +66,49 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Сохраняем оригинальное сообщение
+        | Проверяем Reply
         |--------------------------------------------------------------------------
-        |
-        | В БД сохраняем именно то, что написал пользователь:
-        |
-        | Привет @moShok7
-        |
         */
 
-        ChatMessage::create([
+        $replyToTelegramMessageId =
+            $message->reply_to_message->message_id ?? null;
+
+        $replyToChatMessage = null;
+
+        if ($replyToTelegramMessageId) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Ищем, какому глобальному сообщению соответствует
+            | сообщение, на которое пользователь ответил
+            |--------------------------------------------------------------------------
+            */
+
+            $replyDelivery = ChatMessageDelivery::query()
+                ->where(
+                    'telegram_user_id',
+                    $user->id
+                )
+                ->where(
+                    'telegram_message_id',
+                    $replyToTelegramMessageId
+                )
+                ->first();
+
+            if ($replyDelivery) {
+                $replyToChatMessage = ChatMessage::find(
+                    $replyDelivery->chat_message_id
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Сохраняем сообщение
+        |--------------------------------------------------------------------------
+        */
+
+        $chatMessage = ChatMessage::create([
             'telegram_user_id' => $user->id,
             'message' => $text,
         ]);
@@ -90,11 +125,12 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Делаем автора кликабельным
+        | Автор кликабельный
         |--------------------------------------------------------------------------
         */
 
-        $authorLink = '<a href="tg://user?id='
+        $authorLink =
+            '<a href="tg://user?id='
             . $telegramUserId
             . '">'
             . htmlspecialchars(
@@ -106,7 +142,7 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Преобразуем @username в Telegram mention
+        | Обрабатываем mentions
         |--------------------------------------------------------------------------
         */
 
@@ -114,7 +150,7 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Формируем сообщение
+        | Формируем основное сообщение
         |--------------------------------------------------------------------------
         */
 
@@ -127,37 +163,193 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Пользователи, которым отправляем сообщение
+        | Если это ответ, добавляем информацию об оригинале
         |--------------------------------------------------------------------------
         */
 
-        $users = TelegramUser::where(
-            'telegram_id',
-            '!=',
-            $telegramUserId
-        )
-            ->where('chat_notifications', true)
+        if ($replyToChatMessage) {
+
+            $replyAuthor = $replyToChatMessage->user;
+
+            if ($replyAuthor) {
+
+                $replyUsername = $replyAuthor->username
+                    ? '@' . $replyAuthor->username
+                    : $replyAuthor->first_name;
+
+                $replyAuthorName = htmlspecialchars(
+                    $replyUsername,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                );
+
+                $replyText = htmlspecialchars(
+                    $replyToChatMessage->message,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Ограничиваем длину цитаты
+                |--------------------------------------------------------------------------
+                */
+
+                if (mb_strlen($replyText) > 200) {
+                    $replyText = mb_substr(
+                        $replyText,
+                        0,
+                        200
+                    ) . '...';
+                }
+
+                $replyBlock =
+                    '↩️ <b>'
+                    . $replyAuthorName
+                    . '</b>'
+                    . "\n"
+                    . '<i>'
+                    . $replyText
+                    . '</i>'
+                    . "\n\n";
+
+                $chatText =
+                    $replyBlock
+                    . $chatText;
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Получаем пользователей
+        |--------------------------------------------------------------------------
+        */
+
+        $recipients = TelegramUser::query()
+            ->where(
+                'telegram_id',
+                '!=',
+                $telegramUserId
+            )
+            ->where(
+                'chat_notifications',
+                true
+            )
             ->get();
 
         /*
         |--------------------------------------------------------------------------
-        | Рассылка
+        | Рассылаем сообщение
         |--------------------------------------------------------------------------
         */
 
-        foreach ($users as $recipient) {
+        foreach ($recipients as $recipient) {
+
             try {
-                $telegram->sendMessage([
+
+                /*
+                |--------------------------------------------------------------------------
+                | Параметры отправки
+                |--------------------------------------------------------------------------
+                */
+
+                $sendParams = [
                     'chat_id' => $recipient->telegram_id,
                     'text' => $chatText,
                     'parse_mode' => 'HTML',
-                ]);
+                ];
+
+                /*
+                |--------------------------------------------------------------------------
+                | Если это Reply
+                |--------------------------------------------------------------------------
+                |
+                | Находим именно Telegram message_id оригинала
+                | у ЭТОГО получателя.
+                |
+                */
+
+                if ($replyToChatMessage) {
+
+                    $originalDelivery =
+                        ChatMessageDelivery::query()
+                            ->where(
+                                'chat_message_id',
+                                $replyToChatMessage->id
+                            )
+                            ->where(
+                                'telegram_user_id',
+                                $recipient->id
+                            )
+                            ->first();
+
+                    if ($originalDelivery) {
+
+                        $sendParams['reply_parameters'] = [
+                            'message_id' =>
+                                $originalDelivery->telegram_message_id,
+                        ];
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Отправляем
+                |--------------------------------------------------------------------------
+                */
+
+                $sentMessage = $telegram->sendMessage(
+                    $sendParams
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Получаем Telegram message_id
+                |--------------------------------------------------------------------------
+                */
+
+                $sentTelegramMessageId =
+                    $sentMessage->getMessageId();
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем связь:
+                |
+                | ChatMessage
+                |      ↓
+                | Recipient
+                |      ↓
+                | Telegram message_id
+                |--------------------------------------------------------------------------
+                */
+
+                ChatMessageDelivery::updateOrCreate(
+                    [
+                        'chat_message_id' =>
+                            $chatMessage->id,
+
+                        'telegram_user_id' =>
+                            $recipient->id,
+                    ],
+                    [
+                        'telegram_message_id' =>
+                            $sentTelegramMessageId,
+                    ]
+                );
+
             } catch (\Throwable $e) {
+
                 Log::warning(
                     'Global chat send error',
                     [
-                        'telegram_user_id' => $recipient->id,
-                        'message' => $e->getMessage(),
+                        'telegram_user_id' =>
+                            $recipient->id,
+
+                        'chat_message_id' =>
+                            $chatMessage->id,
+
+                        'message' =>
+                            $e->getMessage(),
                     ]
                 );
             }
@@ -167,25 +359,31 @@ class GlobalChatHandler
     }
 
     /**
-     * Преобразует @username в кликабельный Telegram mention.
-     *
-     * Например:
-     *
-     * Привет @moShok7
-     *
-     * превращается в:
-     *
-     * Привет <a href="tg://user?id=123456">@moShok7</a>
+     * Делает @username кликабельным Telegram mention.
      */
-    private function makeMentionsClickable(string $text): string
-    {
+    private function makeMentionsClickable(
+        string $text
+    ): string {
+
         /*
         |--------------------------------------------------------------------------
-        | Сначала полностью экранируем HTML
+        | Ищем @username
         |--------------------------------------------------------------------------
         */
 
-        $text = htmlspecialchars(
+        preg_match_all(
+            '/(?<![a-zA-Z0-9_])@([a-zA-Z0-9_]{1,32})(?![a-zA-Z0-9_])/u',
+            $text,
+            $matches
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Экранируем HTML
+        |--------------------------------------------------------------------------
+        */
+
+        $escapedText = htmlspecialchars(
             $text,
             ENT_QUOTES | ENT_SUBSTITUTE,
             'UTF-8'
@@ -193,91 +391,101 @@ class GlobalChatHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Находим все @username
+        | Нет mentions
         |--------------------------------------------------------------------------
         */
 
-        preg_match_all(
-            '/(?<![a-zA-Z0-9_])@([a-zA-Z0-9_]{5,32})/u',
-            $text,
-            $matches
-        );
-
         if (empty($matches[1])) {
-            return $text;
+            return $escapedText;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Убираем дубликаты
+        | Username из сообщения
         |--------------------------------------------------------------------------
         */
 
         $usernames = [];
 
         foreach ($matches[1] as $username) {
-            $usernames[strtolower($username)] = $username;
+
+            $usernames[strtolower($username)] =
+                $username;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Ищем пользователей в БД
+        | Ищем пользователей
         |--------------------------------------------------------------------------
         */
 
         $users = TelegramUser::query()
             ->whereNotNull('username')
             ->whereIn(
-                \DB::raw('LOWER(username)'),
+                DB::raw('LOWER(username)'),
                 array_keys($usernames)
             )
             ->get();
 
         /*
         |--------------------------------------------------------------------------
-        | Заменяем найденные username на Telegram mention
+        | Карта username => Telegram ID
         |--------------------------------------------------------------------------
         */
 
-        foreach ($users as $user) {
+        foreach ($users as $mentionedUser) {
+
             if (
-                empty($user->username) ||
-                empty($user->telegram_id)
+                !$mentionedUser->username ||
+                !$mentionedUser->telegram_id
             ) {
                 continue;
             }
 
-            $username = $user->username;
+            $username =
+                $mentionedUser->username;
 
-            $safeUsername = htmlspecialchars(
-                $username,
-                ENT_QUOTES | ENT_SUBSTITUTE,
-                'UTF-8'
-            );
+            $telegramId =
+                $mentionedUser->telegram_id;
 
-            $mention = '<a href="tg://user?id='
-                . $user->telegram_id
+            $safeUsername =
+                htmlspecialchars(
+                    $username,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Настоящий Telegram mention
+            |--------------------------------------------------------------------------
+            */
+
+            $mention =
+                '<a href="tg://user?id='
+                . $telegramId
                 . '">@'
                 . $safeUsername
                 . '</a>';
 
             /*
             |--------------------------------------------------------------------------
-            | Регистронезависимая замена
+            | Заменяем username
             |--------------------------------------------------------------------------
             */
 
-            $pattern = '/(?<![a-zA-Z0-9_])@'
+            $pattern =
+                '/(?<![a-zA-Z0-9_])@'
                 . preg_quote($username, '/')
                 . '(?![a-zA-Z0-9_])/iu';
 
-            $text = preg_replace(
+            $escapedText = preg_replace(
                 $pattern,
                 $mention,
-                $text
+                $escapedText
             );
         }
 
-        return $text;
+        return $escapedText;
     }
 }
