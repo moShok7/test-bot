@@ -4,7 +4,6 @@ namespace App\Services\Bot;
 
 use App\Models\ChatMessage;
 use App\Models\ChatMessageDelivery;
-use App\Models\ChatMessageMention;
 use App\Models\TelegramUser;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -116,19 +115,6 @@ class GlobalChatHandler
         */
 
         $mentionedUsers = $this->findMentionedUsers($text);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Сохраняем mentions
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($mentionedUsers as $mentionedUser) {
-            ChatMessageMention::firstOrCreate([
-                'chat_message_id' => $chatMessage->id,
-                'telegram_user_id' => $mentionedUser->id,
-            ]);
-        }
 
         /*
         |--------------------------------------------------------------------------
@@ -368,13 +354,6 @@ class GlobalChatHandler
                 |--------------------------------------------------------------------------
                 | Если пользователя упомянули,
                 | отправляем отдельное уведомление.
-                |--------------------------------------------------------------------------
-                |
-                | Это ВАЖНЫЙ момент.
-                |
-                | Уведомление является Reply на основное сообщение.
-                | Поэтому Telegram показывает стрелку/цитату,
-                | по которой можно перейти к исходному сообщению.
                 |--------------------------------------------------------------------------
                 */
 
