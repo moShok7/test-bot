@@ -251,13 +251,22 @@ class GlobalChatHandler
         |
         */
 
-        GlobalChatDeliveryJob::dispatch(
-            chatMessageId: $chatMessage->id,
-            replyToChatMessageId: $replyToChatMessage?->id,
-            authorTelegramId: (int) $telegramUserId,
-            chatText: $chatText,
-            entities: $entities,
-        )->onQueue('telegram');
+       \Log::info('BEFORE GlobalChatDeliveryJob dispatch', [
+    'chatMessageId' => $chatMessage->id,
+    'authorTelegramId' => $telegramUserId,
+]);
+
+GlobalChatDeliveryJob::dispatch(
+    chatMessageId: $chatMessage->id,
+    replyToChatMessageId: $replyToChatMessage?->id,
+    authorTelegramId: (int) $telegramUserId,
+    chatText: $chatText,
+    entities: $entities,
+)->onQueue('telegram');
+
+\Log::info('AFTER GlobalChatDeliveryJob dispatch', [
+    'chatMessageId' => $chatMessage->id,
+]);
 
         return true;
     }
