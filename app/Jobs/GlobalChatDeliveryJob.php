@@ -54,6 +54,13 @@ class GlobalChatDeliveryJob implements ShouldQueue
             ]
         );
 
+        /*
+         * Получатели глобального чата.
+         *
+         * Автор тоже НЕ получает свою копию.
+         * Это оставляем как было.
+         */
+
         TelegramUser::query()
             ->where(
                 'telegram_id',
@@ -74,11 +81,9 @@ class GlobalChatDeliveryJob implements ShouldQueue
                         try {
                             /*
                              * -------------------------------------------------
-                             * ВАЖНО:
+                             * Никакого reply_parameters.
                              *
-                             * Здесь НЕТ reply_parameters.
-                             *
-                             * Reply уже находится внутри $this->chatText.
+                             * Reply уже находится внутри chatText.
                              * -------------------------------------------------
                              */
 
@@ -89,6 +94,10 @@ class GlobalChatDeliveryJob implements ShouldQueue
                                 'text' =>
                                     $this->chatText,
 
+                                /*
+                                 * text_mention entities автора
+                                 * передаются непосредственно Telegram.
+                                 */
                                 'entities' =>
                                     $this->entities,
                             ];
@@ -110,6 +119,12 @@ class GlobalChatDeliveryJob implements ShouldQueue
                                 ]
                             );
 
+                            /*
+                             * -------------------------------------------------
+                             * Отправляем сообщение.
+                             * -------------------------------------------------
+                             */
+
                             $sentMessage =
                                 $telegram->sendMessage(
                                     $sendParams
@@ -118,22 +133,21 @@ class GlobalChatDeliveryJob implements ShouldQueue
                             $sentTelegramMessageId =
                                 $sentMessage->getMessageId();
 
-                            $now = now();
-
                             /*
                              * -------------------------------------------------
-                             * Сохраняем связь:
+                             * Сохраняем соответствие:
                              *
-                             * наш ChatMessage
-                             *       ↓
-                             * пользователь-получатель
-                             *       ↓
+                             * ChatMessage
+                             *      ↓
+                             * recipient
+                             *      ↓
                              * Telegram message_id
                              *
-                             * Именно она потом позволит определить,
-                             * на какое сообщение пользователь ответил.
+                             * Это необходимо для нашего Custom Reply.
                              * -------------------------------------------------
                              */
+
+                            $now = now();
 
                             $deliveries[] = [
                                 'chat_message_id' =>
@@ -167,8 +181,8 @@ class GlobalChatDeliveryJob implements ShouldQueue
                             );
                         } catch (Throwable $e) {
                             /*
-                             * Ошибка одного пользователя не должна
-                             * останавливать рассылку остальным.
+                             * Ошибка одного пользователя
+                             * не останавливает рассылку.
                              */
 
                             Log::warning(
@@ -195,7 +209,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                     /*
                      * ---------------------------------------------------------
-                     * Сохраняем Telegram message_id.
+                     * Записываем Telegram message_id.
                      * ---------------------------------------------------------
                      */
 
@@ -227,3 +241,4 @@ class GlobalChatDeliveryJob implements ShouldQueue
         );
     }
 }
+
