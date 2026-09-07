@@ -31,7 +31,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
     public int $timeout = 120;
 
     /**
-     * Повторная попытка через 5 секунд.
+     * Повторная попытка.
      */
     public function backoff(): array
     {
@@ -52,21 +52,16 @@ class GlobalChatDeliveryJob implements ShouldQueue
      */
     public function handle(Api $telegram): void
     {
+        Log::info('RUNNING GlobalChatDeliveryJob', [
+            'chatMessageId' => $this->chatMessageId,
+            'replyToChatMessageId' => $this->replyToChatMessageId,
+            'authorTelegramId' => $this->authorTelegramId,
+        ]);
+
         /*
         |--------------------------------------------------------------------------
-        | Если это Reply
+        | Получаем исходные сообщения для Reply
         |--------------------------------------------------------------------------
-        |
-        | Получаем ВСЕ исходные delivery одним SELECT.
-        |
-        | Было:
-        |
-        | 60 пользователей = 60 SELECT
-        |
-        | Теперь:
-        |
-        | 1 SELECT
-        |
         */
 
         $originalDeliveries = collect();
@@ -79,6 +74,11 @@ class GlobalChatDeliveryJob implements ShouldQueue
                 )
                 ->get()
                 ->keyBy('telegram_user_id');
+
+            Log::info('REPLY ORIGINAL DELIVERIES', [
+                'chatMessageId' => $this->replyToChatMessageId,
+                'count' => $originalDeliveries->count(),
+            ]);
         }
 
         /*
@@ -110,7 +110,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
                         try {
                             /*
                             |--------------------------------------------------------------------------
-                            | Параметры сообщения
+                            | Базовые параметры
                             |--------------------------------------------------------------------------
                             */
 
@@ -122,27 +122,47 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                             /*
                             |--------------------------------------------------------------------------
-                            | НАСТОЯЩИЙ Telegram Reply
+                            | Telegram Reply
                             |--------------------------------------------------------------------------
-                            |
-                            | Telegram сам нарисует Reply-блок.
-                            |
                             */
 
+                            $originalDelivery = null;
+
                             if ($this->replyToChatMessageId) {
-                                $originalDelivery =
-                                    $originalDeliveries->get(
-                                        $recipient->id
-                                    );
+                                $originalDelivery = $originalDeliveries->get(
+                                    $recipient->id
+                                );
 
                                 if ($originalDelivery) {
                                     $sendParams['reply_parameters'] = [
-                                        'message_id' =>
-                                            $originalDelivery
-                                                ->telegram_message_id,
+                                        'message_id' => (int) $originalDelivery->telegram_message_id,
                                     ];
                                 }
                             }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Диагностика
+                            |--------------------------------------------------------------------------
+                            */
+
+                            Log::info('TELEGRAM SEND', [
+                                'recipient' => $recipient->telegram_id,
+
+                                'chatMessageId' => $this->chatMessageId,
+
+                                'replyToChatMessageId' =>
+                                    $this->replyToChatMessageId,
+
+                                'originalDeliveryId' =>
+                                    $originalDelivery?->id,
+
+                                'originalTelegramMessageId' =>
+                                    $originalDelivery?->telegram_message_id,
+
+                                'hasReplyParameters' =>
+                                    isset($sendParams['reply_parameters']),
+                            ]);
 
                             /*
                             |--------------------------------------------------------------------------
@@ -159,13 +179,8 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                             /*
                             |--------------------------------------------------------------------------
-                            | НЕ делаем updateOrCreate здесь
+                            | Сохраняем delivery
                             |--------------------------------------------------------------------------
-                            |
-                            | Вместо 60 SELECT + 60 INSERT/UPDATE
-                            | собираем данные и одним upsert сохраняем
-                            | всю пачку.
-                            |
                             */
 
                             $now = now();
@@ -185,8 +200,15 @@ class GlobalChatDeliveryJob implements ShouldQueue
                                 'updated_at' => $now,
                             ];
 
+                            Log::info('TELEGRAM SENT', [
+                                'recipient' => $recipient->telegram_id,
+                                'telegramMessageId' => $sentTelegramMessageId,
+                                'replyToTelegramMessageId' =>
+                                    $originalDelivery?->telegram_message_id,
+                            ]);
+
                         } catch (Throwable $e) {
-                            Log::warning(
+                            Log::error(
                                 'Global chat send error',
                                 [
                                     'telegram_user_id' =>
@@ -197,6 +219,9 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                                     'message' =>
                                         $e->getMessage(),
+
+                                    'exception' =>
+                                        get_class($e),
                                 ]
                             );
                         }
@@ -204,7 +229,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Сохраняем deliveries одной операцией
+                    | Массовое сохранение deliveries
                     |--------------------------------------------------------------------------
                     */
 
@@ -223,5 +248,9 @@ class GlobalChatDeliveryJob implements ShouldQueue
                     }
                 }
             );
+
+        Log::info('DONE GlobalChatDeliveryJob', [
+            'chatMessageId' => $this->chatMessageId,
+        ]);
     }
 }
