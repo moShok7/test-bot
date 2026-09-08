@@ -35,6 +35,8 @@ class GlobalChatDeliveryJob implements ShouldQueue
         public int $authorTelegramId,
         public string $chatText,
         public array $entities,
+        public string $messageType = 'text',
+        public ?string $mediaFileId = null,
     ) {
     }
 
@@ -51,15 +53,14 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                 'authorTelegramId' =>
                     $this->authorTelegramId,
+
+                'messageType' =>
+                    $this->messageType,
+
+                'mediaFileId' =>
+                    $this->mediaFileId,
             ]
         );
-
-        /*
-         * Получатели глобального чата.
-         *
-         * Автор тоже НЕ получает свою копию.
-         * Это оставляем как было.
-         */
 
         TelegramUser::query()
             ->where(
@@ -75,75 +76,156 @@ class GlobalChatDeliveryJob implements ShouldQueue
             ->chunkById(
                 100,
                 function ($recipients) use ($telegram) {
+
                     $deliveries = [];
 
                     foreach ($recipients as $recipient) {
                         try {
                             /*
                              * -------------------------------------------------
-                             * Никакого reply_parameters.
+                             * Для стикера сначала отправляем header.
                              *
-                             * Reply уже находится внутри chatText.
+                             * У sticker нельзя использовать caption/entities.
                              * -------------------------------------------------
                              */
 
-                            $sendParams = [
-                                'chat_id' =>
-                                    $recipient->telegram_id,
+                            if ($this->messageType === 'sticker') {
+                                if (
+                                    $this->chatText !== ''
+                                ) {
+                                    $headerParams = [
+                                        'chat_id' =>
+                                            $recipient->telegram_id,
 
-                                'text' =>
-                                    $this->chatText,
+                                        'text' =>
+                                            $this->chatText,
 
-                                /*
-                                 * text_mention entities автора
-                                 * передаются непосредственно Telegram.
-                                 */
-                                'entities' =>
-                                    $this->entities,
-                            ];
+                                        'entities' =>
+                                            $this->entities,
+                                    ];
 
-                            Log::info(
-                                'TELEGRAM SEND',
-                                [
-                                    'recipient' =>
+                                    $telegram->sendMessage(
+                                        $headerParams
+                                    );
+                                }
+
+                                if (
+                                    !$this->mediaFileId
+                                ) {
+                                    throw new \RuntimeException(
+                                        'Sticker file_id is empty'
+                                    );
+                                }
+
+                                $sendParams = [
+                                    'chat_id' =>
                                         $recipient->telegram_id,
 
-                                    'chatMessageId' =>
-                                        $this->chatMessageId,
+                                    'sticker' =>
+                                        $this->mediaFileId,
+                                ];
 
-                                    'replyToChatMessageId' =>
-                                        $this->replyToChatMessageId,
+                                Log::info(
+                                    'TELEGRAM SEND STICKER',
+                                    [
+                                        'recipient' =>
+                                            $recipient->telegram_id,
 
-                                    'sendParams' =>
-                                        $sendParams,
-                                ]
-                            );
+                                        'chatMessageId' =>
+                                            $this->chatMessageId,
+
+                                        'sendParams' =>
+                                            $sendParams,
+                                    ]
+                                );
+
+                                $sentMessage =
+                                    $telegram->sendSticker(
+                                        $sendParams
+                                    );
+                            } else {
+                                /*
+                                 * -------------------------------------------------
+                                 * Обычный текст
+                                 * -------------------------------------------------
+                                 */
+
+                                if (
+                                    $this->messageType === 'text'
+                                ) {
+                                    $sendParams = [
+                                        'chat_id' =>
+                                            $recipient->telegram_id,
+
+                                        'text' =>
+                                            $this->chatText,
+
+                                        'entities' =>
+                                            $this->entities,
+                                    ];
+
+                                    $sentMessage =
+                                        $telegram->sendMessage(
+                                            $sendParams
+                                        );
+                                } else {
+                                    /*
+                                     * -------------------------------------------------
+                                     * Media
+                                     * -------------------------------------------------
+                                     */
+
+                                    if (
+                                        !$this->mediaFileId
+                                    ) {
+                                        throw new \RuntimeException(
+                                            'Media file_id is empty'
+                                        );
+                                    }
+
+                                    $sendParams = [
+                                        'chat_id' =>
+                                            $recipient->telegram_id,
+                                    ];
+
+                                    /*
+                                     * Caption можно использовать
+                                     * для photo/video/animation/voice/audio/document.
+                                     */
+
+                                    if (
+                                        $this->chatText !== ''
+                                    ) {
+                                        $sendParams['caption'] =
+                                            $this->chatText;
+
+                                        $sendParams['caption_entities'] =
+                                            $this->entities;
+                                    }
+
+                                    $sentMessage =
+                                        $this->sendMedia(
+                                            $telegram,
+                                            $sendParams
+                                        );
+                                }
+                            }
 
                             /*
                              * -------------------------------------------------
-                             * Отправляем сообщение.
+                             * Получаем Telegram message_id
                              * -------------------------------------------------
                              */
-
-                            $sentMessage =
-                                $telegram->sendMessage(
-                                    $sendParams
-                                );
 
                             $sentTelegramMessageId =
                                 $sentMessage->getMessageId();
 
                             /*
                              * -------------------------------------------------
-                             * Сохраняем соответствие:
+                             * Сохраняем связь.
                              *
-                             * ChatMessage
-                             *      ↓
-                             * recipient
-                             *      ↓
-                             * Telegram message_id
-                             *
-                             * Это необходимо для нашего Custom Reply.
+                             * Именно этот message_id потом используется
+                             * для Custom Reply.
                              * -------------------------------------------------
                              */
 
@@ -177,6 +259,9 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                                     'chatMessageId' =>
                                         $this->chatMessageId,
+
+                                    'messageType' =>
+                                        $this->messageType,
                                 ]
                             );
                         } catch (Throwable $e) {
@@ -196,6 +281,9 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                                     'chat_message_id' =>
                                         $this->chatMessageId,
+
+                                    'messageType' =>
+                                        $this->messageType,
 
                                     'message' =>
                                         $e->getMessage(),
@@ -237,8 +325,77 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                 'replyToChatMessageId' =>
                     $this->replyToChatMessageId,
+
+                'messageType' =>
+                    $this->messageType,
             ]
         );
     }
-}
 
+    /*
+     * -------------------------------------------------------------
+     * Отправка media
+     * -------------------------------------------------------------
+     */
+
+    private function sendMedia(
+        Api $telegram,
+        array $sendParams
+    ) {
+        switch ($this->messageType) {
+            case 'animation':
+                $sendParams['animation'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendAnimation(
+                    $sendParams
+                );
+
+            case 'voice':
+                $sendParams['voice'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendVoice(
+                    $sendParams
+                );
+
+            case 'video':
+                $sendParams['video'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendVideo(
+                    $sendParams
+                );
+
+            case 'photo':
+                $sendParams['photo'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendPhoto(
+                    $sendParams
+                );
+
+            case 'audio':
+                $sendParams['audio'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendAudio(
+                    $sendParams
+                );
+
+            case 'document':
+                $sendParams['document'] =
+                    $this->mediaFileId;
+
+                return $telegram->sendDocument(
+                    $sendParams
+                );
+
+            default:
+                throw new \RuntimeException(
+                    'Unsupported media type: '
+                    . $this->messageType
+                );
+        }
+    }
+}
