@@ -16,7 +16,7 @@ class GlobalChatHandler
     {
         /*
          * ---------------------------------------------------------
-         * Определяем тип входящего сообщения
+         * Определяем тип сообщения
          * ---------------------------------------------------------
          */
 
@@ -27,16 +27,8 @@ class GlobalChatHandler
         }
 
         /*
-         * Для обычного текста обязательно должен быть text.
-         *
-         * Для media-сообщений text может отсутствовать.
-         */
-
-        $text = trim((string) ($message->text ?? ''));
-
-        /*
          * ---------------------------------------------------------
-         * Автор
+         * Telegram User
          * ---------------------------------------------------------
          */
 
@@ -46,7 +38,32 @@ class GlobalChatHandler
             return false;
         }
 
+        /*
+         * ВАЖНО:
+         *
+         * Если username отсутствует, НЕ добавляем @.
+         *
+         * Будет:
+         *
+         *     Shohjahon
+         *
+         * а не:
+         *
+         *     @Shohjahon
+         *
+         * При этом text_mention делает имя синим
+         * и кликабельным.
+         */
+
         $username = $message->from->username ?? null;
+
+        $username = $username !== null
+            ? trim((string) $username)
+            : null;
+
+        if ($username === '') {
+            $username = null;
+        }
 
         $firstName = trim(
             (string) ($message->from->first_name ?? '')
@@ -56,9 +73,25 @@ class GlobalChatHandler
             (string) ($message->from->last_name ?? '')
         );
 
-        if ($username !== null && trim($username) !== '') {
-            $authorName = '@' . trim($username);
+        /*
+         * ---------------------------------------------------------
+         * Имя автора
+         * ---------------------------------------------------------
+         */
+
+        if ($username !== null) {
+            /*
+             * Если есть настоящий Telegram username,
+             * показываем @username.
+             */
+
+            $authorName = '@' . $username;
         } else {
+            /*
+             * Если username нет,
+             * показываем настоящее имя/фамилию.
+             */
+
             $authorName = trim(
                 $firstName . ' ' . $lastName
             );
@@ -79,9 +112,7 @@ class GlobalChatHandler
                 'telegram_id' => $telegramUserId,
             ],
             [
-                'username' => $username !== null
-                    ? trim($username)
-                    : null,
+                'username' => $username,
 
                 'first_name' => $firstName !== ''
                     ? $firstName
@@ -95,13 +126,13 @@ class GlobalChatHandler
 
         /*
          * ---------------------------------------------------------
-         * Сохраняем сообщение
+         * Получаем текст / caption
          * ---------------------------------------------------------
-         *
-         * Для media сохраняем caption, если он есть.
-         *
-         * Если caption отсутствует, сохраняем пустую строку.
          */
+
+        $text = trim(
+            (string) ($message->text ?? '')
+        );
 
         $messageContent = $text;
 
@@ -111,14 +142,21 @@ class GlobalChatHandler
             );
         }
 
+        /*
+         * ---------------------------------------------------------
+         * Сохраняем сообщение
+         * ---------------------------------------------------------
+         */
+
         $chatMessage = ChatMessage::create([
             'telegram_user_id' => $user->id,
+
             'message' => $messageContent,
         ]);
 
         /*
          * ---------------------------------------------------------
-         * Получаем file_id media
+         * Получаем file_id
          * ---------------------------------------------------------
          */
 
@@ -138,8 +176,11 @@ class GlobalChatHandler
         $replyText = null;
 
         $replyAuthorName = null;
+
         $replyAuthorTelegramId = null;
+
         $replyAuthorFirstName = null;
+
         $replyAuthorLastName = null;
 
         $replyToMessage =
@@ -151,7 +192,8 @@ class GlobalChatHandler
 
             if ($replyTelegramMessageId) {
                 /*
-                 * Ищем оригинальное сообщение по Telegram message_id.
+                 * Ищем именно то сообщение,
+                 * которое было отправлено этому пользователю.
                  */
 
                 $delivery = ChatMessageDelivery::query()
@@ -168,7 +210,9 @@ class GlobalChatHandler
                 if ($delivery) {
                     $originalChatMessage =
                         ChatMessage::query()
-                            ->find($delivery->chat_message_id);
+                            ->find(
+                                $delivery->chat_message_id
+                            );
 
                     if ($originalChatMessage) {
                         $replyToChatMessageId =
@@ -176,6 +220,10 @@ class GlobalChatHandler
 
                         $replyText =
                             $originalChatMessage->message;
+
+                        /*
+                         * Получаем автора оригинального сообщения.
+                         */
 
                         $replyAuthor =
                             TelegramUser::query()
@@ -191,40 +239,79 @@ class GlobalChatHandler
                             $replyAuthorUsername =
                                 trim(
                                     (string) (
-                                        $replyAuthor->username ?? ''
+                                        $replyAuthor->username
+                                        ?? ''
                                     )
                                 );
 
                             $replyAuthorFirstName =
                                 trim(
                                     (string) (
-                                        $replyAuthor->first_name ?? ''
+                                        $replyAuthor->first_name
+                                        ?? ''
                                     )
                                 );
 
                             $replyAuthorLastName =
                                 trim(
                                     (string) (
-                                        $replyAuthor->last_name ?? ''
+                                        $replyAuthor->last_name
+                                        ?? ''
                                     )
                                 );
 
-                            if ($replyAuthorUsername !== '') {
-                                $replyAuthorName =
-                                    '@' . $replyAuthorUsername;
-                            } else {
-                                $replyAuthorName = trim(
-                                    $replyAuthorFirstName
-                                    . ' '
-                                    . $replyAuthorLastName
-                                );
+                            /*
+                             * Если username есть:
+                             *
+                             *     @username
+                             *
+                             * Если username нет:
+                             *
+                             *     Имя Фамилия
+                             */
 
-                                if ($replyAuthorName === '') {
+                            if (
+                                $replyAuthorUsername !== ''
+                            ) {
+                                $replyAuthorName =
+                                    '@' .
+                                    $replyAuthorUsername;
+                            } else {
+                                $replyAuthorName =
+                                    trim(
+                                        $replyAuthorFirstName
+                                        . ' '
+                                        . $replyAuthorLastName
+                                    );
+
+                                if (
+                                    $replyAuthorName === ''
+                                ) {
                                     $replyAuthorName =
                                         'Пользователь';
                                 }
                             }
                         }
+
+                        Log::info(
+                            'GLOBAL CHAT CUSTOM REPLY FOUND',
+                            [
+                                'currentTelegramUserId' =>
+                                    $telegramUserId,
+
+                                'replyTelegramMessageId' =>
+                                    $replyTelegramMessageId,
+
+                                'originalChatMessageId' =>
+                                    $replyToChatMessageId,
+
+                                'replyAuthorTelegramId' =>
+                                    $replyAuthorTelegramId,
+
+                                'replyAuthorName' =>
+                                    $replyAuthorName,
+                            ]
+                        );
                     }
                 }
             }
@@ -232,12 +319,14 @@ class GlobalChatHandler
 
         /*
          * ---------------------------------------------------------
-         * Ищем @username
+         * Поиск @username
          * ---------------------------------------------------------
          */
 
         $mentionedUsers =
-            $this->findMentionedUsers($messageContent);
+            $this->findMentionedUsers(
+                $messageContent
+            );
 
         foreach ($mentionedUsers as $mentionedUser) {
             Log::debug(
@@ -254,13 +343,8 @@ class GlobalChatHandler
 
         /*
          * ---------------------------------------------------------
-         * Собираем header / текст
+         * Формируем текст
          * ---------------------------------------------------------
-         *
-         * Для text/photo/video/voice/audio/document/animation
-         * можем передать caption.
-         *
-         * Для sticker Telegram caption не поддерживает.
          */
 
         $chatText = '';
@@ -283,20 +367,41 @@ class GlobalChatHandler
                 $replyAuthorTelegramId !== null
                 && $replyAuthorName !== null
             ) {
-                $replyAuthorOffset =
-                    $this->utf16Length($chatText);
+                /*
+                 * ВАЖНО:
+                 *
+                 * Используем offset именно Reply автора.
+                 */
 
-                $chatText .= $replyAuthorName;
+                $replyAuthorOffset =
+                    $this->utf16Length(
+                        $chatText
+                    );
+
+                $chatText .=
+                    $replyAuthorName;
+
+                /*
+                 * text_mention гарантирует,
+                 * что имя будет кликабельным,
+                 * даже если username отсутствует.
+                 */
 
                 $entities[] =
                     $this->makeTextMentionEntity(
-                        offset: $replyAuthorOffset,
-                        text: $replyAuthorName,
+                        offset:
+                            $replyAuthorOffset,
+
+                        text:
+                            $replyAuthorName,
+
                         telegramUserId:
                             $replyAuthorTelegramId,
+
                         firstName:
                             $replyAuthorFirstName
                                 ?: 'Пользователь',
+
                         lastName:
                             $replyAuthorLastName
                     );
@@ -306,33 +411,58 @@ class GlobalChatHandler
 
             $chatText .= "\n";
 
-            $chatText .= $this->makeQuote(
-                $replyText
-            );
+            /*
+             * Если у оригинального media нет caption,
+             * здесь будет "└ Сообщение".
+             */
+
+            $chatText .=
+                $this->makeQuote(
+                    $replyText
+                );
 
             $chatText .= "\n\n";
         }
 
         /*
          * ---------------------------------------------------------
-         * Автор
+         * Автор текущего сообщения
          * ---------------------------------------------------------
          */
 
         $authorOffset =
-            $this->utf16Length($chatText);
+            $this->utf16Length(
+                $chatText
+            );
 
-        $chatText .= $authorName;
+        $chatText .=
+            $authorName;
+
+        /*
+         * КЛЮЧЕВОЙ МОМЕНТ:
+         *
+         * Даже если username отсутствует,
+         * entity type = text_mention.
+         *
+         * Telegram ID пользователя используется
+         * для перехода на его профиль.
+         */
 
         $entities[] =
             $this->makeTextMentionEntity(
-                offset: $authorOffset,
-                text: $authorName,
+                offset:
+                    $authorOffset,
+
+                text:
+                    $authorName,
+
                 telegramUserId:
                     (int) $telegramUserId,
+
                 firstName:
                     $user->first_name
                         ?: 'Пользователь',
+
                 lastName:
                     $user->last_name
             );
@@ -350,13 +480,28 @@ class GlobalChatHandler
 
         /*
          * ---------------------------------------------------------
-         * Основной текст / caption
+         * Основной текст
          * ---------------------------------------------------------
          */
 
         if ($messageContent !== '') {
-            $chatText .= $messageContent;
+            $chatText .=
+                $messageContent;
         }
+
+        /*
+         * ---------------------------------------------------------
+         * Для media без caption
+         * ---------------------------------------------------------
+         *
+         * Например:
+         *
+         *     🎤 voice
+         *     🧩 sticker
+         *     🎬 GIF
+         *
+         * Сам media будет отправлен Job.
+         */
 
         /*
          * ---------------------------------------------------------
@@ -375,6 +520,15 @@ class GlobalChatHandler
 
                 'authorName' =>
                     $authorName,
+
+                'username' =>
+                    $username,
+
+                'firstName' =>
+                    $firstName,
+
+                'lastName' =>
+                    $lastName,
 
                 'messageType' =>
                     $messageType,
@@ -395,7 +549,7 @@ class GlobalChatHandler
 
         /*
          * ---------------------------------------------------------
-         * Job
+         * Dispatch Job
          * ---------------------------------------------------------
          */
 
@@ -439,8 +593,9 @@ class GlobalChatHandler
      * -------------------------------------------------------------
      */
 
-    private function detectMessageType($message): ?string
-    {
+    private function detectMessageType(
+        $message
+    ): ?string {
         if (!empty($message->text)) {
             return 'text';
         }
@@ -488,34 +643,41 @@ class GlobalChatHandler
     ): ?string {
         switch ($messageType) {
             case 'sticker':
-                return $message->sticker->file_id ?? null;
+                return $message->sticker->file_id
+                    ?? null;
 
             case 'animation':
-                return $message->animation->file_id ?? null;
+                return $message->animation->file_id
+                    ?? null;
 
             case 'voice':
-                return $message->voice->file_id ?? null;
+                return $message->voice->file_id
+                    ?? null;
 
             case 'video':
-                return $message->video->file_id ?? null;
+                return $message->video->file_id
+                    ?? null;
 
             case 'audio':
-                return $message->audio->file_id ?? null;
+                return $message->audio->file_id
+                    ?? null;
 
             case 'document':
-                return $message->document->file_id ?? null;
+                return $message->document->file_id
+                    ?? null;
 
             case 'photo':
-                /*
-                 * Берём самое большое фото.
-                 */
                 if (!empty($message->photo)) {
-                    $photos = $message->photo;
+                    $photos =
+                        $message->photo;
 
                     $lastPhoto =
-                        $photos[count($photos) - 1];
+                        $photos[
+                            count($photos) - 1
+                        ];
 
-                    return $lastPhoto->file_id ?? null;
+                    return $lastPhoto->file_id
+                        ?? null;
                 }
 
                 return null;
@@ -530,8 +692,9 @@ class GlobalChatHandler
      * -------------------------------------------------------------
      */
 
-    private function findMentionedUsers(string $text)
-    {
+    private function findMentionedUsers(
+        string $text
+    ) {
         preg_match_all(
             '/(?<![a-zA-Z0-9_])@([a-zA-Z0-9_]{1,32})(?![a-zA-Z0-9_])/u',
             $text,
@@ -546,7 +709,9 @@ class GlobalChatHandler
 
         foreach ($matches[1] as $username) {
             $normalized =
-                strtolower(trim($username));
+                strtolower(
+                    trim($username)
+                );
 
             if ($normalized === '') {
                 continue;
@@ -571,7 +736,7 @@ class GlobalChatHandler
 
     /*
      * -------------------------------------------------------------
-     * Entity text_mention
+     * text_mention
      * -------------------------------------------------------------
      */
 
@@ -583,12 +748,20 @@ class GlobalChatHandler
         ?string $lastName = null
     ): array {
         return [
-            'type' => 'text_mention',
+            'type' =>
+                'text_mention',
 
-            'offset' => $offset,
+            /*
+             * Telegram требует UTF-16 offset.
+             */
+
+            'offset' =>
+                $offset,
 
             'length' =>
-                $this->utf16Length($text),
+                $this->utf16Length(
+                    $text
+                ),
 
             'user' => [
                 'id' =>
@@ -597,8 +770,17 @@ class GlobalChatHandler
                 'is_bot' =>
                     false,
 
+                /*
+                 * Это НЕ текст,
+                 * который Telegram обязательно показывает.
+                 *
+                 * Это данные пользователя,
+                 * на которого указывает text_mention.
+                 */
+
                 'first_name' =>
-                    $firstName ?: 'Пользователь',
+                    $firstName
+                        ?: 'Пользователь',
 
                 'last_name' =>
                     $lastName,
@@ -612,8 +794,9 @@ class GlobalChatHandler
      * -------------------------------------------------------------
      */
 
-    private function makeQuote(string $text): string
-    {
+    private function makeQuote(
+        string $text
+    ): string {
         $text = trim($text);
 
         if ($text === '') {
@@ -644,13 +827,15 @@ class GlobalChatHandler
      * -------------------------------------------------------------
      */
 
-    private function utf16Length(string $text): int
-    {
-        $utf16 = mb_convert_encoding(
-            $text,
-            'UTF-16LE',
-            'UTF-8'
-        );
+    private function utf16Length(
+        string $text
+    ): int {
+        $utf16 =
+            mb_convert_encoding(
+                $text,
+                'UTF-16LE',
+                'UTF-8'
+            );
 
         return intdiv(
             strlen($utf16),
