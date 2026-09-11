@@ -2,10 +2,10 @@
 
 namespace App\Services\Bot\Lobby;
 
+use App\Jobs\SendLobbyNotificationsJob;
 use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
-use App\Models\LobbyNotification;
 use App\Models\LobbyPlayer;
 
 class CreateLobbyHandler
@@ -56,10 +56,10 @@ class CreateLobbyHandler
                             ]
                         ],
                         [
-    [
-        'text' => '⚙️ Настройки'
-    ]
-]
+                            [
+                                'text' => '⚙️ Настройки'
+                            ]
+                        ]
                     ],
 
                     'resize_keyboard' => true
@@ -433,11 +433,13 @@ class CreateLobbyHandler
             "https://t.me/YkSUS10_bot?start=lobby_{$lobby->id}";
 
         $creatorName = 'Игрок';
-        if($user->username) {
+
+        if ($user->username) {
             $creatorName = '@' . $user->username;
         } elseif ($user->first_name) {
             $creatorName = $user->first_name;
         }
+
         $inviteText =
             "🎮 Приглашение в лобби\n\n" .
             "👑 Создал: {$creatorName}\n" .
@@ -447,143 +449,22 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем игроков, которые уже находятся
-        | в активных лобби
-        |--------------------------------------------------------------------------
-        */
-
-        $activePlayerIds = LobbyPlayer::whereHas(
-            'lobby',
-            function ($query) {
-                $query->whereIn(
-                    'status',
-                    [
-                        'waiting',
-                        'playing'
-                    ]
-                );
-            }
-        )
-        ->pluck('telegram_user_id')
-        ->unique()
-        ->toArray();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Выбираем пользователей для уведомления
+        | Передаём массовую рассылку в Queue
         |--------------------------------------------------------------------------
         |
-        | Создателю уведомление не отправляем.
+        | ВАЖНО:
+        | Здесь больше нет foreach пользователей и sendMessage().
+        |
+        | Polling сразу продолжает обрабатывать другие сообщения.
         |
         */
 
-        $notifyUsersQuery = TelegramUser::query()
-            ->where(
-                'telegram_id',
-                '!=',
-                $telegramId
-            );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Исключаем игроков активных лобби
-        |--------------------------------------------------------------------------
-        */
-
-        if (!empty($activePlayerIds)) {
-
-            $notifyUsersQuery->whereNotIn(
-                'id',
-                $activePlayerIds
-            );
-        }
-
-        $notifyUsers = $notifyUsersQuery->get();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Рассылаем уведомления
-        |--------------------------------------------------------------------------
-        */
-
-        $creatorName = 'Игрок';
-
-if ($user->username) {
-    $creatorName = '@' . $user->username;
-} elseif ($user->first_name) {
-    $creatorName = $user->first_name;
-}
-/*
-|--------------------------------------------------------------------------
-| Рассылаем уведомления
-|--------------------------------------------------------------------------
-*/
-
-foreach ($notifyUsers as $notifyUser) {
-
-    try {
-
-        $response = $telegram->sendMessage([
-            'chat_id' =>
-                $notifyUser->telegram_id,
-
-            'text' =>
-                "🔔 Новое лобби!\n\n" .
-                "🎮 Лобби #{$lobby->id}\n" .
-                "👑 Создал: {$creatorName}\n" .
-                "👥 Игроков: {$count}/{$lobby->max_players}\n" .
-                "⏳ Ожидание игроков\n\n" .
-                "Хочешь присоединиться?",
-
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' =>
-                                '🚪 Войти в лобби',
-
-                            'callback_data' =>
-                                'join_lobby_' . $lobby->id
-                        ]
-                    ]
-                ]
-            ])
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Сохраняем сообщение, чтобы потом удалить
-        |--------------------------------------------------------------------------
-        */
-
-        LobbyNotification::create([
-            'lobby_id' =>
-                $lobby->id,
-
-            'telegram_user_id' =>
-                $notifyUser->id,
-
-            'telegram_message_id' =>
-                $response->getMessageId(),
-        ]);
-
-    } catch (\Throwable $e) {
-
-        \Log::warning(
-            'Не удалось отправить уведомление о новом лобби',
-            [
-                'telegram_id' =>
-                    $notifyUser->telegram_id,
-
-                'lobby_id' =>
-                    $lobby->id,
-
-                'error' =>
-                    $e->getMessage()
-            ]
+        SendLobbyNotificationsJob::dispatch(
+            $lobby->id,
+            $telegramId,
+            $creatorName,
+            $count
         );
-    }
-}
 
         /*
         |--------------------------------------------------------------------------
@@ -605,12 +486,10 @@ foreach ($notifyUsers as $notifyUser) {
                 'inline_keyboard' => [
                     [
                         [
-                            'text' =>
-                                '📋 Скопировать приглашение',
+                            'text' => '📋 Скопировать приглашение',
 
                             'copy_text' => [
-                                'text' =>
-                                    $inviteText
+                                'text' => $inviteText
                             ]
                         ]
                     ]
@@ -634,15 +513,13 @@ foreach ($notifyUsers as $notifyUser) {
                 'keyboard' => [
                     [
                         [
-                            'text' =>
-                                '🎮 Моё лобби'
+                            'text' => '🎮 Моё лобби'
                         ]
                     ],
 
                     [
                         [
-                            'text' =>
-                                '⬅️ Главное меню'
+                            'text' => '⬅️ Главное меню'
                         ]
                     ]
                 ],
