@@ -59,8 +59,22 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
                 'mediaFileId' =>
                     $this->mediaFileId,
+
+                'entities' =>
+                    $this->entities,
             ]
         );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Telegram entities
+        |--------------------------------------------------------------------------
+        |
+        | Telegram Bot API ожидает entities как JSON-serialized array.
+        |
+        */
+
+        $encodedEntities = $this->encodeEntities();
 
         TelegramUser::query()
             ->where(
@@ -75,24 +89,30 @@ class GlobalChatDeliveryJob implements ShouldQueue
             ->orderBy('id')
             ->chunkById(
                 100,
-                function ($recipients) use ($telegram) {
-
+                function ($recipients) use (
+                    $telegram,
+                    $encodedEntities
+                ) {
                     $deliveries = [];
 
                     foreach ($recipients as $recipient) {
                         try {
                             /*
-                             * -------------------------------------------------
-                             * Для стикера сначала отправляем header.
-                             *
-                             * У sticker нельзя использовать caption/entities.
-                             * -------------------------------------------------
-                             */
+                            |--------------------------------------------------------------------------
+                            | STICKER
+                            |--------------------------------------------------------------------------
+                            */
 
                             if ($this->messageType === 'sticker') {
-                                if (
-                                    $this->chatText !== ''
-                                ) {
+                                /*
+                                | Sticker сам по себе не поддерживает
+                                | caption/entities.
+                                |
+                                | Поэтому сначала отправляем текст,
+                                | затем sticker.
+                                */
+
+                                if ($this->chatText !== '') {
                                     $headerParams = [
                                         'chat_id' =>
                                             $recipient->telegram_id,
@@ -101,17 +121,26 @@ class GlobalChatDeliveryJob implements ShouldQueue
                                             $this->chatText,
 
                                         'entities' =>
-                                            $this->entities,
+                                            $encodedEntities,
                                     ];
+
+                                    Log::info(
+                                        'TELEGRAM SEND STICKER HEADER',
+                                        [
+                                            'recipient' =>
+                                                $recipient->telegram_id,
+
+                                            'entities' =>
+                                                $this->entities,
+                                        ]
+                                    );
 
                                     $telegram->sendMessage(
                                         $headerParams
                                     );
                                 }
 
-                                if (
-                                    !$this->mediaFileId
-                                ) {
+                                if (!$this->mediaFileId) {
                                     throw new \RuntimeException(
                                         'Sticker file_id is empty'
                                     );
@@ -143,91 +172,104 @@ class GlobalChatDeliveryJob implements ShouldQueue
                                     $telegram->sendSticker(
                                         $sendParams
                                     );
-                            } else {
-                                /*
-                                 * -------------------------------------------------
-                                 * Обычный текст
-                                 * -------------------------------------------------
-                                 */
-
-                                if (
-                                    $this->messageType === 'text'
-                                ) {
-                                    $sendParams = [
-                                        'chat_id' =>
-                                            $recipient->telegram_id,
-
-                                        'text' =>
-                                            $this->chatText,
-
-                                        'entities' =>
-                                            $this->entities,
-                                    ];
-
-                                    $sentMessage =
-                                        $telegram->sendMessage(
-                                            $sendParams
-                                        );
-                                } else {
-                                    /*
-                                     * -------------------------------------------------
-                                     * Media
-                                     * -------------------------------------------------
-                                     */
-
-                                    if (
-                                        !$this->mediaFileId
-                                    ) {
-                                        throw new \RuntimeException(
-                                            'Media file_id is empty'
-                                        );
-                                    }
-
-                                    $sendParams = [
-                                        'chat_id' =>
-                                            $recipient->telegram_id,
-                                    ];
-
-                                    /*
-                                     * Caption можно использовать
-                                     * для photo/video/animation/voice/audio/document.
-                                     */
-
-                                    if (
-                                        $this->chatText !== ''
-                                    ) {
-                                        $sendParams['caption'] =
-                                            $this->chatText;
-
-                                        $sendParams['caption_entities'] =
-                                            $this->entities;
-                                    }
-
-                                    $sentMessage =
-                                        $this->sendMedia(
-                                            $telegram,
-                                            $sendParams
-                                        );
-                                }
                             }
 
                             /*
-                             * -------------------------------------------------
-                             * Получаем Telegram message_id
-                             * -------------------------------------------------
-                             */
+                            |--------------------------------------------------------------------------
+                            | TEXT
+                            |--------------------------------------------------------------------------
+                            */
+
+                            elseif (
+                                $this->messageType === 'text'
+                            ) {
+                                $sendParams = [
+                                    'chat_id' =>
+                                        $recipient->telegram_id,
+
+                                    'text' =>
+                                        $this->chatText,
+
+                                    'entities' =>
+                                        $encodedEntities,
+                                ];
+
+                                Log::info(
+                                    'TELEGRAM SEND TEXT',
+                                    [
+                                        'recipient' =>
+                                            $recipient->telegram_id,
+
+                                        'chatMessageId' =>
+                                            $this->chatMessageId,
+
+                                        'entities' =>
+                                            $this->entities,
+
+                                        'encodedEntities' =>
+                                            $encodedEntities,
+                                    ]
+                                );
+
+                                $sentMessage =
+                                    $telegram->sendMessage(
+                                        $sendParams
+                                    );
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | MEDIA
+                            |--------------------------------------------------------------------------
+                            */
+
+                            else {
+                                if (!$this->mediaFileId) {
+                                    throw new \RuntimeException(
+                                        'Media file_id is empty'
+                                    );
+                                }
+
+                                $sendParams = [
+                                    'chat_id' =>
+                                        $recipient->telegram_id,
+                                ];
+
+                                /*
+                                |--------------------------------------------------------------
+                                | Caption
+                                |--------------------------------------------------------------
+                                */
+
+                                if ($this->chatText !== '') {
+                                    $sendParams['caption'] =
+                                        $this->chatText;
+
+                                    $sendParams['caption_entities'] =
+                                        $encodedEntities;
+                                }
+
+                                $sentMessage =
+                                    $this->sendMedia(
+                                        $telegram,
+                                        $sendParams
+                                    );
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Telegram message_id
+                            |--------------------------------------------------------------------------
+                            */
 
                             $sentTelegramMessageId =
                                 $sentMessage->getMessageId();
 
                             /*
-                             * -------------------------------------------------
-                             * Сохраняем связь.
-                             *
-                             * Именно этот message_id потом используется
-                             * для Custom Reply.
-                             * -------------------------------------------------
-                             */
+                            |--------------------------------------------------------------------------
+                            | Сохраняем связь
+                            |--------------------------------------------------------------------------
+                            */
 
                             $now = now();
 
@@ -266,9 +308,10 @@ class GlobalChatDeliveryJob implements ShouldQueue
                             );
                         } catch (Throwable $e) {
                             /*
-                             * Ошибка одного пользователя
-                             * не останавливает рассылку.
-                             */
+                            |--------------------------------------------------------------------------
+                            | Ошибка одного пользователя
+                            |--------------------------------------------------------------------------
+                            */
 
                             Log::warning(
                                 'Global chat send error',
@@ -296,10 +339,10 @@ class GlobalChatDeliveryJob implements ShouldQueue
                     }
 
                     /*
-                     * ---------------------------------------------------------
-                     * Записываем Telegram message_id.
-                     * ---------------------------------------------------------
-                     */
+                    |--------------------------------------------------------------------------
+                    | Сохраняем Telegram message_id
+                    |--------------------------------------------------------------------------
+                    */
 
                     if (!empty($deliveries)) {
                         ChatMessageDelivery::upsert(
@@ -333,10 +376,26 @@ class GlobalChatDeliveryJob implements ShouldQueue
     }
 
     /*
-     * -------------------------------------------------------------
-     * Отправка media
-     * -------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | JSON для Telegram entities
+    |--------------------------------------------------------------------------
+    */
+
+    private function encodeEntities(): string
+    {
+        return json_encode(
+            $this->entities,
+            JSON_UNESCAPED_UNICODE |
+            JSON_UNESCAPED_SLASHES |
+            JSON_THROW_ON_ERROR
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Отправка media
+    |--------------------------------------------------------------------------
+    */
 
     private function sendMedia(
         Api $telegram,
