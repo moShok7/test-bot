@@ -2,6 +2,7 @@
 
 namespace App\Services\Bot\Lobby;
 
+use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
 use App\Models\LobbyPlayer;
@@ -12,6 +13,12 @@ class SearchLobbyHandler
     {
         $text = trim($message->text ?? '');
 
+        /*
+        |--------------------------------------------------------------------------
+        | Обрабатываем только кнопки поиска
+        |--------------------------------------------------------------------------
+        */
+
         if (
             $text !== '🔍 Найти лобби' &&
             $text !== '🔄 Обновить поиск'
@@ -19,21 +26,20 @@ class SearchLobbyHandler
             return false;
         }
 
-        $chatId = $message->chat->id;
-        $telegramId = $message->from->id ?? null;
+        $chatId =
+            $message->chat->id ?? null;
 
-        if (!$telegramId) {
+        $telegramId =
+            $message->from->id ?? null;
+
+        if (!$telegramId || !$chatId) {
             return false;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем Telegram-пользователя
+        | Получаем TelegramUser
         |--------------------------------------------------------------------------
-        |
-        | Пользователь автоматически создаётся при /start.
-        | GameProfile здесь больше НЕ нужен.
-        |
         */
 
         $telegramUser = TelegramUser::where(
@@ -45,11 +51,32 @@ class SearchLobbyHandler
             return false;
         }
 
-        $telegramUserId = $telegramUser->id;
+        /*
+        |--------------------------------------------------------------------------
+        | Удаляем сессию создания лобби
+        |--------------------------------------------------------------------------
+        |
+        | ВАЖНО:
+        | bot_sessions.telegram_user_id =
+        | telegram_users.id
+        |
+        | Поэтому используем $telegramUser->id,
+        | а НЕ $telegramId.
+        |
+        */
+
+        BotSession::where(
+            'telegram_user_id',
+            $telegramUser->id
+        )->delete();
+
+        $telegramUserId =
+            $telegramUser->id;
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем, не находится ли пользователь уже в активном лобби
+        | Проверяем, не находится ли пользователь уже
+        | в активном лобби
         |--------------------------------------------------------------------------
         */
 
@@ -57,21 +84,25 @@ class SearchLobbyHandler
             'telegram_user_id',
             $telegramUserId
         )
-        ->whereHas('lobby', function ($query) {
-            $query->whereIn(
-                'status',
-                [
-                    'waiting',
-                    'playing'
-                ]
-            );
-        })
+        ->whereHas(
+            'lobby',
+            function ($query) {
+                $query->whereIn(
+                    'status',
+                    [
+                        'waiting',
+                        'playing'
+                    ]
+                );
+            }
+        )
         ->exists();
 
         if ($already) {
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "⚠️ Вы уже состоите в активном лобби.\n\n" .
@@ -81,12 +112,15 @@ class SearchLobbyHandler
                     'keyboard' => [
                         [
                             [
-                                'text' => '🎮 Моё лобби'
+                                'text' =>
+                                    '🎮 Моё лобби'
                             ]
                         ],
+
                         [
                             [
-                                'text' => '⬅️ Главное меню'
+                                'text' =>
+                                    '⬅️ Главное меню'
                             ]
                         ]
                     ],
@@ -123,17 +157,22 @@ class SearchLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Показываем найденные лобби
+        | Показываем лобби
         |--------------------------------------------------------------------------
         */
 
         foreach ($lobbies as $lobby) {
 
             /*
-            | Пропускаем полностью заполненные лобби
+            |--------------------------------------------------------------------------
+            | Пропускаем заполненные
+            |--------------------------------------------------------------------------
             */
 
-            if ($lobby->players_count >= $lobby->max_players) {
+            if (
+                $lobby->players_count >=
+                $lobby->max_players
+            ) {
                 continue;
             }
 
@@ -143,27 +182,30 @@ class SearchLobbyHandler
             |--------------------------------------------------------------------------
             | Имя хоста
             |--------------------------------------------------------------------------
-            |
-            | Больше НЕ используем:
-            | $lobby->creator->gameProfile
-            |
-            | Используем Telegram username.
-            |
             */
 
             $hostNickname = 'Игрок';
 
             if ($lobby->creator) {
 
-                if (!empty($lobby->creator->username)) {
-
-                    $hostNickname =
-                        '@' . $lobby->creator->username;
-
-                } elseif (!empty($lobby->creator->first_name)) {
+                if (
+                    !empty(
+                        $lobby->creator->first_name
+                    )
+                ) {
 
                     $hostNickname =
                         $lobby->creator->first_name;
+
+                } elseif (
+                    !empty(
+                        $lobby->creator->username
+                    )
+                ) {
+
+                    $hostNickname =
+                        '@' .
+                        $lobby->creator->username;
                 }
             }
 
@@ -174,7 +216,8 @@ class SearchLobbyHandler
             */
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "🎮 Лобби #{$lobby->id}\n" .
@@ -207,7 +250,8 @@ class SearchLobbyHandler
         if (!$found) {
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "😔 Сейчас нет доступных лобби."
@@ -221,7 +265,8 @@ class SearchLobbyHandler
         */
 
         $telegram->sendMessage([
-            'chat_id' => $chatId,
+            'chat_id' =>
+                $chatId,
 
             'text' =>
                 "🔍 Поиск завершён.\n\n" .
@@ -235,24 +280,32 @@ class SearchLobbyHandler
 
             'reply_markup' => json_encode([
                 'keyboard' => [
+
                     [
                         [
-                            'text' => '🔄 Обновить поиск'
+                            'text' =>
+                                '🔄 Обновить поиск'
                         ]
                     ],
+
                     [
                         [
-                            'text' => '➕ Создать лобби'
+                            'text' =>
+                                '➕ Создать лобби'
                         ]
                     ],
+
                     [
                         [
-                            'text' => '🎮 Моё лобби'
+                            'text' =>
+                                '🎮 Моё лобби'
                         ]
                     ],
+
                     [
                         [
-                            'text' => '⬅️ Главное меню'
+                            'text' =>
+                                '⬅️ Главное меню'
                         ]
                     ]
                 ],
