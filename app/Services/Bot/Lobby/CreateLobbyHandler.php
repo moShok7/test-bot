@@ -7,17 +7,14 @@ use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
 use App\Models\LobbyPlayer;
+use Carbon\Carbon;
 
 class CreateLobbyHandler
 {
-    /*
-    |--------------------------------------------------------------------------
-    | Время жизни сессии создания лобби
-    |--------------------------------------------------------------------------
-    */
-
+    /**
+     * Сессия создания лобби живёт 5 минут.
+     */
     private const SESSION_TIMEOUT_MINUTES = 5;
-
 
     public function handle($message, $telegram): bool
     {
@@ -35,6 +32,11 @@ class CreateLobbyHandler
         |--------------------------------------------------------------------------
         | Получаем TelegramUser
         |--------------------------------------------------------------------------
+        |
+        | ВАЖНО:
+        | BotSession.telegram_user_id хранит telegram_users.id,
+        | а НЕ настоящий Telegram ID.
+        |
         */
 
         $user = TelegramUser::where(
@@ -48,15 +50,8 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем текущую сессию
+        | Очищаем просроченную сессию
         |--------------------------------------------------------------------------
-        |
-        | ВАЖНО:
-        | Если пользователь удалил чат с ботом, старая сессия в БД
-        | физически останется.
-        |
-        | Поэтому при следующем сообщении проверяем её возраст.
-        |
         */
 
         $session = BotSession::where(
@@ -64,25 +59,20 @@ class CreateLobbyHandler
             $user->id
         )->first();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Удаляем просроченную сессию
-        |--------------------------------------------------------------------------
-        */
+        if ($session) {
 
-        if (
-            $session &&
-            $session->step === 'lobby_code' &&
-            $session->updated_at &&
-            $session->updated_at->lt(
-                now()->subMinutes(
-                    self::SESSION_TIMEOUT_MINUTES
-                )
-            )
-        ) {
-            $session->delete();
+            $createdAt = $session->created_at;
 
-            $session = null;
+            if (
+                $createdAt &&
+                Carbon::parse($createdAt)
+                    ->addMinutes(self::SESSION_TIMEOUT_MINUTES)
+                    ->isPast()
+            ) {
+                $session->delete();
+
+                $session = null;
+            }
         }
 
         /*
@@ -94,7 +84,9 @@ class CreateLobbyHandler
         if ($text === '⬅️ Главное меню') {
 
             /*
-            | Сессия удаляется независимо от её состояния
+            | ВАЖНО:
+            | Используем $user->id, потому что именно его
+            | хранит bot_sessions.telegram_user_id.
             */
 
             BotSession::where(
@@ -102,58 +94,30 @@ class CreateLobbyHandler
                 $user->id
             )->delete();
 
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-
-                'text' => '🏠 Главное меню',
-
-                'reply_markup' => json_encode([
-                    'keyboard' => [
-                        [
-                            [
-                                'text' => '➕ Создать лобби'
-                            ],
-                            [
-                                'text' => '🔍 Найти лобби'
-                            ]
-                        ],
-                        [
-                            [
-                                'text' => '🎮 Моё лобби'
-                            ]
-                        ],
-                        [
-                            [
-                                'text' => '⚙️ Настройки'
-                            ]
-                        ]
-                    ],
-
-                    'resize_keyboard' => true
-                ])
-            ]);
+            $this->sendMainMenu(
+                $chatId,
+                $telegram
+            );
 
             return true;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Эти кнопки обрабатывает SearchLobbyHandler
+        | Другие кнопки меню
         |--------------------------------------------------------------------------
         |
-        | Если пользователь нажал поиск, CreateLobbyHandler не должен
-        | воспринимать кнопку как код комнаты.
+        | Если пользователь находится в старой сессии создания,
+        | эти кнопки должны сбрасывать её.
         |
         */
 
         if (
             $text === '🔍 Найти лобби' ||
-            $text === '🔄 Обновить поиск'
+            $text === '🔄 Обновить поиск' ||
+            $text === '🎮 Моё лобби' ||
+            $text === '⚙️ Настройки'
         ) {
-
-            /*
-            | На всякий случай сбрасываем состояние создания
-            */
 
             BotSession::where(
                 'telegram_user_id',
@@ -314,11 +278,11 @@ class CreateLobbyHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Создаём новую сессию
+            | Создаём/обновляем сессию ожидания кода
             |--------------------------------------------------------------------------
             */
 
-            $session = BotSession::updateOrCreate(
+            BotSession::updateOrCreate(
                 [
                     'telegram_user_id' => $user->id
                 ],
@@ -326,12 +290,6 @@ class CreateLobbyHandler
                     'step' => 'lobby_code'
                 ]
             );
-
-            /*
-            | ВАЖНО:
-            | updateOrCreate обновляет updated_at.
-            | Значит таймер 5 минут начинается заново.
-            */
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
@@ -360,22 +318,22 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Если сессии нет
+        | Получаем актуальную сессию
+        |--------------------------------------------------------------------------
+        */
+
+        $session = BotSession::where(
+            'telegram_user_id',
+            $user->id
+        )->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Нет активной сессии
         |--------------------------------------------------------------------------
         |
-        | Это самое важное место.
-        |
-        | Например:
-        |
-        | Пользователь удалил чат.
-        | Через 10 минут пишет:
-        |
-        | "."
-        |
-        | Просроченная сессия выше уже была удалена.
-        | Поэтому сюда попадёт false.
-        |
-        | Дальше сообщение смогут обработать другие Handler'ы.
+        | Очень важно:
+        | Обычный текст вроде "Привет всем" больше не считается кодом.
         |
         */
 
@@ -385,12 +343,43 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Обрабатываем код только при создании лобби
+        | Проверяем шаг
         |--------------------------------------------------------------------------
         */
 
         if ($session->step !== 'lobby_code') {
             return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Дополнительная проверка таймаута
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $session->created_at &&
+            Carbon::parse($session->created_at)
+                ->addMinutes(self::SESSION_TIMEOUT_MINUTES)
+                ->isPast()
+        ) {
+
+            $session->delete();
+
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+
+                'text' =>
+                    "⏱ Время ожидания кода истекло.\n\n" .
+                    "Создайте лобби заново."
+            ]);
+
+            $this->sendMainMenu(
+                $chatId,
+                $telegram
+            );
+
+            return true;
         }
 
         /*
@@ -516,17 +505,23 @@ class CreateLobbyHandler
         $inviteLink =
             "https://t.me/YkSUS10_bot?start=lobby_{$lobby->id}";
 
+        /*
+        |--------------------------------------------------------------------------
+        | Имя создателя
+        |--------------------------------------------------------------------------
+        */
+
         $creatorName = 'Игрок';
 
-        if ($user->username) {
-
-            $creatorName =
-                '@' . $user->username;
-
-        } elseif ($user->first_name) {
+        if ($user->first_name) {
 
             $creatorName =
                 $user->first_name;
+
+        } elseif ($user->username) {
+
+            $creatorName =
+                '@' . $user->username;
         }
 
         $inviteText =
@@ -538,7 +533,7 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Queue
+        | Queue уведомлений
         |--------------------------------------------------------------------------
         */
 
@@ -569,10 +564,12 @@ class CreateLobbyHandler
                 'inline_keyboard' => [
                     [
                         [
-                            'text' => '📋 Скопировать приглашение',
+                            'text' =>
+                                '📋 Скопировать приглашение',
 
                             'copy_text' => [
-                                'text' => $inviteText
+                                'text' =>
+                                    $inviteText
                             ]
                         ]
                     ]
@@ -596,13 +593,15 @@ class CreateLobbyHandler
                 'keyboard' => [
                     [
                         [
-                            'text' => '🎮 Моё лобби'
+                            'text' =>
+                                '🎮 Моё лобби'
                         ]
                     ],
 
                     [
                         [
-                            'text' => '⬅️ Главное меню'
+                            'text' =>
+                                '⬅️ Главное меню'
                         ]
                     ]
                 ],
@@ -613,4 +612,56 @@ class CreateLobbyHandler
 
         return true;
     }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Главное меню
+    |--------------------------------------------------------------------------
+    */
+
+    private function sendMainMenu(
+        $chatId,
+        $telegram
+    ) {
+
+        $telegram->sendMessage([
+            'chat_id' => $chatId,
+
+            'text' =>
+                '🏠 Главное меню',
+
+            'reply_markup' => json_encode([
+                'keyboard' => [
+                    [
+                        [
+                            'text' =>
+                                '➕ Создать лобби'
+                        ],
+                        [
+                            'text' =>
+                                '🔍 Найти лобби'
+                        ]
+                    ],
+
+                    [
+                        [
+                            'text' =>
+                                '🎮 Моё лобби'
+                        ]
+                    ],
+
+                    [
+                        [
+                            'text' =>
+                                '⚙️ Настройки'
+                        ]
+                    ]
+                ],
+
+                'resize_keyboard' => true
+            ])
+        ]);
+    }
 }
+

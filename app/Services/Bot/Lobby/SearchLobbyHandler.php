@@ -13,6 +13,12 @@ class SearchLobbyHandler
     {
         $text = trim($message->text ?? '');
 
+        /*
+        |--------------------------------------------------------------------------
+        | Обрабатываем только кнопки поиска
+        |--------------------------------------------------------------------------
+        */
+
         if (
             $text !== '🔍 Найти лобби' &&
             $text !== '🔄 Обновить поиск'
@@ -20,7 +26,8 @@ class SearchLobbyHandler
             return false;
         }
 
-        $chatId = $message->chat->id ?? null;
+        $chatId =
+            $message->chat->id ?? null;
 
         $telegramId =
             $message->from->id ?? null;
@@ -44,33 +51,32 @@ class SearchLobbyHandler
             return false;
         }
 
-        $telegramUserId =
-            $telegramUser->id;
-
         /*
         |--------------------------------------------------------------------------
-        | Сбрасываем старую сессию
+        | Удаляем сессию создания лобби
         |--------------------------------------------------------------------------
         |
-        | Если пользователь находился на шаге lobby_code,
-        | поиск должен полностью отменить этот режим.
+        | ВАЖНО:
+        | bot_sessions.telegram_user_id =
+        | telegram_users.id
         |
-        | Это особенно важно, если пользователь:
-        |
-        | 1. удалил чат;
-        | 2. вернулся через несколько часов;
-        | 3. нажал "Найти лобби".
+        | Поэтому используем $telegramUser->id,
+        | а НЕ $telegramId.
         |
         */
 
         BotSession::where(
             'telegram_user_id',
-            $telegramUserId
+            $telegramUser->id
         )->delete();
+
+        $telegramUserId =
+            $telegramUser->id;
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем активное лобби
+        | Проверяем, не находится ли пользователь уже
+        | в активном лобби
         |--------------------------------------------------------------------------
         */
 
@@ -95,7 +101,8 @@ class SearchLobbyHandler
         if ($already) {
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "⚠️ Вы уже состоите в активном лобби.\n\n" .
@@ -105,12 +112,15 @@ class SearchLobbyHandler
                     'keyboard' => [
                         [
                             [
-                                'text' => '🎮 Моё лобби'
+                                'text' =>
+                                    '🎮 Моё лобби'
                             ]
                         ],
+
                         [
                             [
-                                'text' => '⬅️ Главное меню'
+                                'text' =>
+                                    '⬅️ Главное меню'
                             ]
                         ]
                     ],
@@ -147,14 +157,16 @@ class SearchLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Показываем найденные лобби
+        | Показываем лобби
         |--------------------------------------------------------------------------
         */
 
         foreach ($lobbies as $lobby) {
 
             /*
-            | Пропускаем заполненные лобби
+            |--------------------------------------------------------------------------
+            | Пропускаем заполненные
+            |--------------------------------------------------------------------------
             */
 
             if (
@@ -176,15 +188,24 @@ class SearchLobbyHandler
 
             if ($lobby->creator) {
 
-                if (!empty($lobby->creator->username)) {
-
-                    $hostNickname =
-                        '@' . $lobby->creator->username;
-
-                } elseif (!empty($lobby->creator->first_name)) {
+                if (
+                    !empty(
+                        $lobby->creator->first_name
+                    )
+                ) {
 
                     $hostNickname =
                         $lobby->creator->first_name;
+
+                } elseif (
+                    !empty(
+                        $lobby->creator->username
+                    )
+                ) {
+
+                    $hostNickname =
+                        '@' .
+                        $lobby->creator->username;
                 }
             }
 
@@ -195,7 +216,8 @@ class SearchLobbyHandler
             */
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "🎮 Лобби #{$lobby->id}\n" .
@@ -228,7 +250,8 @@ class SearchLobbyHandler
         if (!$found) {
 
             $telegram->sendMessage([
-                'chat_id' => $chatId,
+                'chat_id' =>
+                    $chatId,
 
                 'text' =>
                     "😔 Сейчас нет доступных лобби."
@@ -242,7 +265,8 @@ class SearchLobbyHandler
         */
 
         $telegram->sendMessage([
-            'chat_id' => $chatId,
+            'chat_id' =>
+                $chatId,
 
             'text' =>
                 "🔍 Поиск завершён.\n\n" .
@@ -256,24 +280,28 @@ class SearchLobbyHandler
 
             'reply_markup' => json_encode([
                 'keyboard' => [
+
                     [
                         [
                             'text' =>
                                 '🔄 Обновить поиск'
                         ]
                     ],
+
                     [
                         [
                             'text' =>
                                 '➕ Создать лобби'
                         ]
                     ],
+
                     [
                         [
                             'text' =>
                                 '🎮 Моё лобби'
                         ]
                     ],
+
                     [
                         [
                             'text' =>
@@ -289,3 +317,4 @@ class SearchLobbyHandler
         return true;
     }
 }
+
