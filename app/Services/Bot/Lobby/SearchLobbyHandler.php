@@ -2,6 +2,7 @@
 
 namespace App\Services\Bot\Lobby;
 
+use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
 use App\Models\LobbyPlayer;
@@ -19,21 +20,19 @@ class SearchLobbyHandler
             return false;
         }
 
-        $chatId = $message->chat->id;
-        $telegramId = $message->from->id ?? null;
+        $chatId = $message->chat->id ?? null;
 
-        if (!$telegramId) {
+        $telegramId =
+            $message->from->id ?? null;
+
+        if (!$telegramId || !$chatId) {
             return false;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем Telegram-пользователя
+        | Получаем TelegramUser
         |--------------------------------------------------------------------------
-        |
-        | Пользователь автоматически создаётся при /start.
-        | GameProfile здесь больше НЕ нужен.
-        |
         */
 
         $telegramUser = TelegramUser::where(
@@ -45,11 +44,33 @@ class SearchLobbyHandler
             return false;
         }
 
-        $telegramUserId = $telegramUser->id;
+        $telegramUserId =
+            $telegramUser->id;
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем, не находится ли пользователь уже в активном лобби
+        | Сбрасываем старую сессию
+        |--------------------------------------------------------------------------
+        |
+        | Если пользователь находился на шаге lobby_code,
+        | поиск должен полностью отменить этот режим.
+        |
+        | Это особенно важно, если пользователь:
+        |
+        | 1. удалил чат;
+        | 2. вернулся через несколько часов;
+        | 3. нажал "Найти лобби".
+        |
+        */
+
+        BotSession::where(
+            'telegram_user_id',
+            $telegramUserId
+        )->delete();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Проверяем активное лобби
         |--------------------------------------------------------------------------
         */
 
@@ -57,15 +78,18 @@ class SearchLobbyHandler
             'telegram_user_id',
             $telegramUserId
         )
-        ->whereHas('lobby', function ($query) {
-            $query->whereIn(
-                'status',
-                [
-                    'waiting',
-                    'playing'
-                ]
-            );
-        })
+        ->whereHas(
+            'lobby',
+            function ($query) {
+                $query->whereIn(
+                    'status',
+                    [
+                        'waiting',
+                        'playing'
+                    ]
+                );
+            }
+        )
         ->exists();
 
         if ($already) {
@@ -130,10 +154,13 @@ class SearchLobbyHandler
         foreach ($lobbies as $lobby) {
 
             /*
-            | Пропускаем полностью заполненные лобби
+            | Пропускаем заполненные лобби
             */
 
-            if ($lobby->players_count >= $lobby->max_players) {
+            if (
+                $lobby->players_count >=
+                $lobby->max_players
+            ) {
                 continue;
             }
 
@@ -143,12 +170,6 @@ class SearchLobbyHandler
             |--------------------------------------------------------------------------
             | Имя хоста
             |--------------------------------------------------------------------------
-            |
-            | Больше НЕ используем:
-            | $lobby->creator->gameProfile
-            |
-            | Используем Telegram username.
-            |
             */
 
             $hostNickname = 'Игрок';
@@ -237,22 +258,26 @@ class SearchLobbyHandler
                 'keyboard' => [
                     [
                         [
-                            'text' => '🔄 Обновить поиск'
+                            'text' =>
+                                '🔄 Обновить поиск'
                         ]
                     ],
                     [
                         [
-                            'text' => '➕ Создать лобби'
+                            'text' =>
+                                '➕ Создать лобби'
                         ]
                     ],
                     [
                         [
-                            'text' => '🎮 Моё лобби'
+                            'text' =>
+                                '🎮 Моё лобби'
                         ]
                     ],
                     [
                         [
-                            'text' => '⬅️ Главное меню'
+                            'text' =>
+                                '⬅️ Главное меню'
                         ]
                     ]
                 ],
