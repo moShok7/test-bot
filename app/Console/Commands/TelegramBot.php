@@ -6,13 +6,19 @@ use Illuminate\Console\Command;
 use Telegram\Bot\Api;
 
 use App\Models\TelegramUser;
+use App\Models\BotSession;
+
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\GameProfileHandler;
 use App\Services\Bot\AdminHandler;
 use App\Services\Bot\GlobalChatHandler;
+
 use App\Services\Bot\Lobby\LobbyHandler;
 use App\Services\Bot\Lobby\KickPlayerHandler;
 use App\Services\Bot\Lobby\LobbyService;
+use App\Services\Bot\Lobby\CreateLobbyHandler;
+use App\Services\Bot\Lobby\SearchLobbyHandler;
+use App\Services\Bot\Lobby\JoinLobbyHandler;
 
 class TelegramBot extends Command
 {
@@ -39,6 +45,12 @@ class TelegramBot extends Command
         $settingsHandler = new SettingsHandler();
 
         $lobbyHandler = new LobbyHandler($lobbyService);
+
+        $createLobbyHandler = new CreateLobbyHandler();
+
+        $searchLobbyHandler = new SearchLobbyHandler();
+
+        $joinLobbyHandler = new JoinLobbyHandler();
 
         $kickPlayerHandler = new KickPlayerHandler();
 
@@ -83,7 +95,8 @@ class TelegramBot extends Command
 
                     try {
 
-                        $offset = $update->updateId + 1;
+                        $offset =
+                            $update->updateId + 1;
 
                         /*
                         |--------------------------------------------------------------------------
@@ -93,14 +106,15 @@ class TelegramBot extends Command
 
                         if ($update->callbackQuery) {
 
-                            $callback = $update->callbackQuery;
+                            $callback =
+                                $update->callbackQuery;
 
                             $callbackData =
                                 $callback->data ?? '';
 
                             /*
                             |--------------------------------------------------------------------------
-                            | ❌ Кик игрока
+                            | Кик игрока
                             |--------------------------------------------------------------------------
                             */
 
@@ -111,15 +125,10 @@ class TelegramBot extends Command
                                 )
                             ) {
 
-                                \Log::info('KICK CALLBACK RECEIVED', [
-                                    'data' => $callbackData,
-                                    'callback_id' => $callback->id ?? null,
-                                    'from_id' => $callback->from->id ?? null,
-                                ]);
-
                                 $kickPlayerHandler->handle(
                                     (object) [
-                                        'callback_query' => $callback
+                                        'callback_query' =>
+                                            $callback
                                     ],
                                     $telegram
                                 );
@@ -129,7 +138,7 @@ class TelegramBot extends Command
 
                             /*
                             |--------------------------------------------------------------------------
-                            | 🚪 Вход в лобби через inline кнопку
+                            | Вход в лобби
                             |--------------------------------------------------------------------------
                             */
 
@@ -140,43 +149,24 @@ class TelegramBot extends Command
                                 )
                             ) {
 
-                                $lobbyId = str_replace(
-                                    'join_lobby_',
-                                    '',
-                                    $callbackData
-                                );
-
                                 $message =
                                     $callback->message;
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Передаём информацию о пользователе
-                                |--------------------------------------------------------------------------
-                                */
 
                                 $message['from'] =
                                     $callback->from;
 
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Имитируем обычную кнопку
-                                |--------------------------------------------------------------------------
-                                */
-
                                 $message['text'] =
-                                    '🚪 Войти #' . $lobbyId;
+                                    '🚪 Войти #' .
+                                    str_replace(
+                                        'join_lobby_',
+                                        '',
+                                        $callbackData
+                                    );
 
-                                $lobbyHandler->handle(
+                                $joinLobbyHandler->handle(
                                     $message,
                                     $telegram
                                 );
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | Убираем часики с inline-кнопки
-                                |--------------------------------------------------------------------------
-                                */
 
                                 try {
 
@@ -186,14 +176,6 @@ class TelegramBot extends Command
                                     ]);
 
                                 } catch (\Throwable $e) {
-
-                                    \Log::warning(
-                                        'Join callback answer error',
-                                        [
-                                            'message' =>
-                                                $e->getMessage()
-                                        ]
-                                    );
                                 }
 
                                 continue;
@@ -201,7 +183,7 @@ class TelegramBot extends Command
 
                             /*
                             |--------------------------------------------------------------------------
-                            | Админские callback-кнопки
+                            | Остальные callback
                             |--------------------------------------------------------------------------
                             */
 
@@ -219,15 +201,20 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $message = $update->message;
+                        $message =
+                            $update->message;
 
                         if (!$message) {
                             continue;
                         }
 
-                        $text = trim(
-                            $message->text ?? ''
-                        );
+                        $text =
+                            trim(
+                                $message->text ?? ''
+                            );
+
+                        $telegramId =
+                            $message->from->id ?? null;
 
                         /*
                         |--------------------------------------------------------------------------
@@ -235,7 +222,8 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $user = $message->from;
+                        $user =
+                            $message->from;
 
                         if (
                             $user &&
@@ -253,13 +241,83 @@ class TelegramBot extends Command
 
                                     'first_name' =>
                                         $user->first_name,
+
+                                    'last_name' =>
+                                        $user->last_name ?? null,
                                 ]
                             );
                         }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | ⚙️ Настройки
+                        | ВАЖНО:
+                        | Команды навигации сбрасывают старую BotSession
+                        |--------------------------------------------------------------------------
+                        |
+                        | Это решает проблему:
+                        |
+                        | Создал лобби
+                        | ↓
+                        | удалил чат
+                        | ↓
+                        | снова открыл бота
+                        | ↓
+                        | нажал другую кнопку
+                        |
+                        | Старая lobby_code сессия больше не мешает.
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $resetSessionButtons = [
+                            '⬅️ Главное меню',
+                            '🎮 Игровое меню',
+                            '🔍 Найти лобби',
+                            '🔄 Обновить поиск',
+                            '➕ Создать лобби',
+                            '🎮 Моё лобби',
+                            '⚙️ Настройки',
+                            '🚪 Выйти из лобби',
+                            '📤 Приглашение',
+                            '▶️ Начать игру',
+                            '✏️ Изменить код',
+                            '👥 Игроки',
+                            '❌ Кикнуть игрока',
+                        ];
+
+                        if (
+                            $telegramId &&
+                            in_array(
+                                $text,
+                                $resetSessionButtons,
+                                true
+                            )
+                        ) {
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | ВАЖНО:
+                            | Используем ID TelegramUser, а не Telegram ID.
+                            |--------------------------------------------------------------------------
+                            */
+
+                            $telegramUser =
+                                TelegramUser::where(
+                                    'telegram_id',
+                                    $telegramId
+                                )->first();
+
+                            if ($telegramUser) {
+
+                                BotSession::where(
+                                    'telegram_user_id',
+                                    $telegramUser->id
+                                )->delete();
+                            }
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Настройки
                         |--------------------------------------------------------------------------
                         */
 
@@ -285,9 +343,7 @@ class TelegramBot extends Command
                             )
                         ) {
 
-                            app(
-                                \App\Services\Bot\Lobby\JoinLobbyHandler::class
-                            )->handleDeepLink(
+                            $joinLobbyHandler->handleDeepLink(
                                 $message,
                                 $telegram
                             );
@@ -297,7 +353,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Bolt
+                        | /bolt
                         |--------------------------------------------------------------------------
                         */
 
@@ -320,6 +376,27 @@ class TelegramBot extends Command
                         */
 
                         if ($text === '/start') {
+
+                            /*
+                            | Сбрасываем старую сессию при новом /start
+                            */
+
+                            if ($telegramId) {
+
+                                $telegramUser =
+                                    TelegramUser::where(
+                                        'telegram_id',
+                                        $telegramId
+                                    )->first();
+
+                                if ($telegramUser) {
+
+                                    BotSession::where(
+                                        'telegram_user_id',
+                                        $telegramUser->id
+                                    )->delete();
+                                }
+                            }
 
                             $telegram->sendMessage([
                                 'chat_id' =>
@@ -427,6 +504,55 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
+                        | СОЗДАНИЕ ЛОББИ
+                        |--------------------------------------------------------------------------
+                        |
+                        | ВАЖНО:
+                        | Проверяем раньше общего LobbyHandler.
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            $createLobbyHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ПОИСК ЛОББИ
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            $searchLobbyHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ВХОД В ЛОББИ / ПРИГЛАШЕНИЯ
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            $joinLobbyHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
                         | Админ
                         |--------------------------------------------------------------------------
                         */
@@ -457,7 +583,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Лобби
+                        | Остальные функции лобби
                         |--------------------------------------------------------------------------
                         */
 
@@ -494,6 +620,9 @@ class TelegramBot extends Command
 
                                 'line' =>
                                     $e->getLine(),
+
+                                'trace' =>
+                                    $e->getTraceAsString(),
                             ]
                         );
 
@@ -518,4 +647,3 @@ class TelegramBot extends Command
         }
     }
 }
-
