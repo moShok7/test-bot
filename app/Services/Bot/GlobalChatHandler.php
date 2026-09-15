@@ -3,6 +3,7 @@
 namespace App\Services\Bot;
 
 use App\Jobs\GlobalChatDeliveryJob;
+use App\Models\BotGroup;
 use App\Models\ChatMessage;
 use App\Models\ChatMessageDelivery;
 use App\Models\TelegramUser;
@@ -32,19 +33,31 @@ class GlobalChatHandler
         */
 
         $chatType = $message->chat->type ?? null;
-
-        if ($chatType !== 'private') {
-            Log::info(
-                'GlobalChatHandler: сообщение не из ЛС проигнорировано',
+        $chatId = $message->chat->id ?? null;
+            if ($chatType === 'group' || $chatType === 'supergroup') {
+        if ($chatId) {
+            BotGroup::updateOrCreate(
                 [
-                    'chatType' => $chatType,
-                    'chatId' => $message->chat->id ?? null,
-                    'messageId' => $message->message_id ?? null,
+                    'chat_id' => $chatId,
+                ],
+                [
+                    'title' => $message->chat->title ?? null,
+                    'type' => $chatType,
+                    'is_active' => true,
                 ]
             );
-
-            return false;
         }
+
+        return false;
+    }
+
+    /*
+     * Каналы тоже игнорируем.
+     */
+    if ($chatType !== 'private') {
+        return false;
+    }
+
 
         /*
         |--------------------------------------------------------------------------
