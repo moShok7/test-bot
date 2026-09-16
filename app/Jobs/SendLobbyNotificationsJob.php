@@ -62,6 +62,20 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         /*
         |--------------------------------------------------------------------------
+        | Имя создателя
+        |--------------------------------------------------------------------------
+        */
+
+        $creatorLink = "tg://user?id={$this->creatorTelegramId}";
+
+        $creatorName = htmlspecialchars(
+            $this->creatorName,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
+
+        /*
+        |--------------------------------------------------------------------------
         | Текст уведомления
         |--------------------------------------------------------------------------
         */
@@ -69,39 +83,29 @@ class SendLobbyNotificationsJob implements ShouldQueue
         $text =
             "🔔 Новое лобби!\n\n" .
             "🎮 Лобби #{$lobby->id}\n" .
-            "👑 Создал: {$this->creatorName}\n" .
-            "🔑 Код: {$lobby->game_room_code}\n" .
+            "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n" .
+            "🔑 Код: {$lobby->game_room_code}\n\n" .
             "👇 Вход в игру:";
 
         /*
         |--------------------------------------------------------------------------
         | Кнопки
         |--------------------------------------------------------------------------
-        |
-        | Войти в игру — отдельная строка.
-        | Скопировать код — отдельная строка.
-        |
         */
 
         $replyMarkup = [
             'inline_keyboard' => [
                 [
                     [
-                        'text' =>
-                            '🎮 Войти в игру',
-
-                        'url' =>
-                            $gameLink,
+                        'text' => '🎮 Войти в игру',
+                        'url' => $gameLink,
                     ],
                 ],
                 [
                     [
-                        'text' =>
-                            '📋 Скопировать код',
-
+                        'text' => '📋 Скопировать код',
                         'copy_text' => [
-                            'text' =>
-                                $lobby->game_room_code,
+                            'text' => $lobby->game_room_code,
                         ],
                     ],
                 ],
@@ -126,9 +130,9 @@ class SendLobbyNotificationsJob implements ShouldQueue
                 );
             }
         )
-        ->pluck('telegram_user_id')
-        ->unique()
-        ->toArray();
+            ->pluck('telegram_user_id')
+            ->unique()
+            ->toArray();
 
         $query = TelegramUser::query()
             ->where(
@@ -151,25 +155,21 @@ class SendLobbyNotificationsJob implements ShouldQueue
             try {
 
                 $response = $telegram->sendMessage([
-                    'chat_id' =>
-                        $notifyUser->telegram_id,
+                    'chat_id' => $notifyUser->telegram_id,
 
-                    'text' =>
-                        $text,
+                    'text' => $text,
 
-                    'reply_markup' =>
-                        json_encode($replyMarkup),
+                    'parse_mode' => 'HTML',
+
+                    'reply_markup' => json_encode($replyMarkup),
                 ]);
 
                 LobbyNotification::create([
-                    'lobby_id' =>
-                        $lobby->id,
+                    'lobby_id' => $lobby->id,
 
-                    'telegram_user_id' =>
-                        $notifyUser->id,
+                    'telegram_user_id' => $notifyUser->id,
 
-                    'telegram_message_id' =>
-                        $response->getMessageId(),
+                    'telegram_message_id' => $response->getMessageId(),
                 ]);
 
             } catch (\Throwable $e) {
@@ -208,14 +208,13 @@ class SendLobbyNotificationsJob implements ShouldQueue
             try {
 
                 $telegram->sendMessage([
-                    'chat_id' =>
-                        $group->chat_id,
+                    'chat_id' => $group->chat_id,
 
-                    'text' =>
-                        $text,
+                    'text' => $text,
 
-                    'reply_markup' =>
-                        json_encode($replyMarkup),
+                    'parse_mode' => 'HTML',
+
+                    'reply_markup' => json_encode($replyMarkup),
                 ]);
 
                 Log::info(
