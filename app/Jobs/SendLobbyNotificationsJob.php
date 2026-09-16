@@ -70,9 +70,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
             "🔔 Новое лобби!\n\n" .
             "🎮 Лобби #{$lobby->id}\n" .
             "👑 Создал: {$this->creatorName}\n" .
-            "👥 Игроки: {$this->count}/{$lobby->max_players}\n" .
             "🔑 Код: {$lobby->game_room_code}\n" .
-            "⏳ Ожидание игроков\n\n" .
             "👇 Вход в игру:";
 
         /*
