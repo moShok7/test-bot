@@ -2,11 +2,13 @@
 
 namespace App\Jobs;
 
+use App\Models\BotGroup;
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
 use App\Models\TelegramUser;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 
 class SendLobbyNotificationsJob implements ShouldQueue
@@ -28,36 +30,57 @@ class SendLobbyNotificationsJob implements ShouldQueue
             return;
         }
 
-        // Если лобби уже закрыто — ничего не отправляем.
+        /*
+         * Если лобби уже закрыто —
+         * ничего не отправляем.
+         */
         if ($lobby->status !== 'waiting') {
             return;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Получаем пользователей, которые уже находятся
-        | в активных лобби
-        |--------------------------------------------------------------------------
-        */
+         * =========================================================
+         * ТЕКСТ УВЕДОМЛЕНИЯ
+         * =========================================================
+         */
+
+        $text =
+            "🔔 Новое лобби!\n\n" .
+            "🎮 Лобби #{$lobby->id}\n" .
+            "👑 Создал: {$this->creatorName}\n" .
+            "👥 Игроки: {$this->count}/{$lobby->max_players}\n" .
+            "⏳ Ожидание игроков\n\n" .
+            "Хочешь присоединиться?";
+
+        $replyMarkup = [
+            'inline_keyboard' => [
+                [
+                    [
+                        'text' => '🚪 Войти в лобби',
+                        'callback_data' => 'join_lobby_' . $lobby->id,
+                    ],
+                ],
+            ],
+        ];
+
+        /*
+         * =========================================================
+         * 1. ЛИЧНЫЕ УВЕДОМЛЕНИЯ
+         * =========================================================
+         */
 
         $activePlayerIds = \App\Models\LobbyPlayer::whereHas(
             'lobby',
             function ($query) {
                 $query->whereIn('status', [
                     'waiting',
-                    'playing'
+                    'playing',
                 ]);
             }
         )
         ->pluck('telegram_user_id')
         ->unique()
         ->toArray();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Пользователи для уведомления
-        |--------------------------------------------------------------------------
-        */
 
         $query = TelegramUser::query()
             ->where(
@@ -75,71 +98,67 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         $notifyUsers = $query->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Рассылка
-        |--------------------------------------------------------------------------
-        */
-
         foreach ($notifyUsers as $notifyUser) {
-
             try {
-
                 $response = $telegram->sendMessage([
                     'chat_id' => $notifyUser->telegram_id,
-
-                    'text' =>
-                        "🔔 Новое лобби!\n\n" .
-                        "🎮 Лобби #{$lobby->id}\n" .
-                        "👑 Создал: {$this->creatorName}\n" .
-                        "👥 Игроки: {$this->count}/{$lobby->max_players}\n" .
-                        "⏳ Ожидание игроков\n\n" .
-                        "Хочешь присоединиться?",
-
-                    'reply_markup' => json_encode([
-                        'inline_keyboard' => [
-                            [
-                                [
-                                    'text' => '🚪 Войти в лобби',
-
-                                    'callback_data' =>
-                                        'join_lobby_' . $lobby->id
-                                ]
-                            ]
-                        ]
-                    ])
+                    'text' => $text,
+                    'reply_markup' => json_encode($replyMarkup),
                 ]);
 
-                /*
-                |--------------------------------------------------------------------------
-                | Сохраняем сообщение для последующего удаления
-                |--------------------------------------------------------------------------
-                */
-
                 LobbyNotification::create([
-                    'lobby_id' =>
-                        $lobby->id,
-
-                    'telegram_user_id' =>
-                        $notifyUser->id,
-
-                    'telegram_message_id' =>
-                        $response->getMessageId(),
+                    'lobby_id' => $lobby->id,
+                    'telegram_user_id' => $notifyUser->id,
+                    'telegram_message_id' => $response->getMessageId(),
                 ]);
 
             } catch (\Throwable $e) {
-
-                \Log::warning(
+                Log::warning(
                     'Не удалось отправить уведомление о новом лобби',
                     [
-                        'telegram_id' =>
-                            $notifyUser->telegram_id,
+                        'telegram_id' => $notifyUser->telegram_id,
+                        'lobby_id' => $lobby->id,
+                        'error' => $e->getMessage(),
+                    ]
+                );
+            }
+        }
 
-                        'lobby_id' =>
-                            $lobby->id,
+        /*
+         * =========================================================
+         * 2. УВЕДОМЛЕНИЯ В ГРУППЫ
+         * =========================================================
+         */
 
-                        'error' =>
-                            $e->getMessage()
+        $groups = BotGroup::query()
+            ->where('is_active', true)
+            ->get();
+
+        foreach ($groups as $group) {
+            try {
+                $telegram->sendMessage([
+                    'chat_id' => $group->chat_id,
+                    'text' => $text,
+                    'reply_markup' => json_encode($replyMarkup),
+                ]);
+
+                Log::info(
+                    'Уведомление о новом лобби отправлено в группу',
+                    [
+                        'group_id' => $group->chat_id,
+                        'group_title' => $group->title,
+                        'lobby_id' => $lobby->id,
+                    ]
+                );
+
+            } catch (\Throwable $e) {
+                Log::warning(
+                    'Не удалось отправить уведомление о новом лобби в группу',
+                    [
+                        'group_id' => $group->chat_id,
+                        'group_title' => $group->title,
+                        'lobby_id' => $lobby->id,
+                        'error' => $e->getMessage(),
                     ]
                 );
             }
