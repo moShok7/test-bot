@@ -31,56 +31,108 @@ class SendLobbyNotificationsJob implements ShouldQueue
         }
 
         /*
-         * Если лобби уже закрыто —
-         * ничего не отправляем.
-         */
+        |--------------------------------------------------------------------------
+        | Если лобби уже закрыто — ничего не отправляем
+        |--------------------------------------------------------------------------
+        */
+
         if ($lobby->status !== 'waiting') {
             return;
         }
 
         /*
-         * =========================================================
-         * ТЕКСТ УВЕДОМЛЕНИЯ
-         * =========================================================
-         */
+        |--------------------------------------------------------------------------
+        | Если код игры отсутствует — уведомление не отправляем
+        |--------------------------------------------------------------------------
+        */
+
+        if (empty($lobby->game_room_code)) {
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Прямая ссылка в игру
+        |--------------------------------------------------------------------------
+        */
+
+        $gameLink =
+            "https://play.suspects.io/?code=" .
+            $lobby->game_room_code;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Имя создателя
+        |--------------------------------------------------------------------------
+        */
+
+        $creatorLink = "tg://user?id={$this->creatorTelegramId}";
+
+        $creatorName = htmlspecialchars(
+            $this->creatorName,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Текст уведомления
+        |--------------------------------------------------------------------------
+        */
 
         $text =
             "🔔 Новое лобби!\n\n" .
             "🎮 Лобби #{$lobby->id}\n" .
-            "👑 Создал: {$this->creatorName}\n" .
-            "👥 Игроки: {$this->count}/{$lobby->max_players}\n" .
-            "⏳ Ожидание игроков\n\n" .
-            "Хочешь присоединиться?";
+            "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n" .
+            "🔑 Код: {$lobby->game_room_code}\n\n" .
+            "👇 Вход в игру:";
+
+        /*
+        |--------------------------------------------------------------------------
+        | Кнопки
+        |--------------------------------------------------------------------------
+        */
 
         $replyMarkup = [
             'inline_keyboard' => [
                 [
                     [
-                        'text' => '🚪 Войти в лобби',
-                        'callback_data' => 'join_lobby_' . $lobby->id,
+                        'text' => '🎮 Войти в игру',
+                        'url' => $gameLink,
+                    ],
+                ],
+                [
+                    [
+                        'text' => '📋 Скопировать код',
+                        'copy_text' => [
+                            'text' => $lobby->game_room_code,
+                        ],
                     ],
                 ],
             ],
         ];
 
         /*
-         * =========================================================
-         * 1. ЛИЧНЫЕ УВЕДОМЛЕНИЯ
-         * =========================================================
-         */
+        |--------------------------------------------------------------------------
+        | 1. ЛИЧНЫЕ УВЕДОМЛЕНИЯ
+        |--------------------------------------------------------------------------
+        */
 
         $activePlayerIds = \App\Models\LobbyPlayer::whereHas(
             'lobby',
             function ($query) {
-                $query->whereIn('status', [
-                    'waiting',
-                    'playing',
-                ]);
+                $query->whereIn(
+                    'status',
+                    [
+                        'waiting',
+                        'playing',
+                    ]
+                );
             }
         )
-        ->pluck('telegram_user_id')
-        ->unique()
-        ->toArray();
+            ->pluck('telegram_user_id')
+            ->unique()
+            ->toArray();
 
         $query = TelegramUser::query()
             ->where(
@@ -99,66 +151,102 @@ class SendLobbyNotificationsJob implements ShouldQueue
         $notifyUsers = $query->get();
 
         foreach ($notifyUsers as $notifyUser) {
+
             try {
+
                 $response = $telegram->sendMessage([
                     'chat_id' => $notifyUser->telegram_id,
+
                     'text' => $text,
+
+                    'parse_mode' => 'HTML',
+
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
 
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
+
                     'telegram_user_id' => $notifyUser->id,
+
                     'telegram_message_id' => $response->getMessageId(),
                 ]);
 
             } catch (\Throwable $e) {
+
                 Log::warning(
                     'Не удалось отправить уведомление о новом лобби',
                     [
-                        'telegram_id' => $notifyUser->telegram_id,
-                        'lobby_id' => $lobby->id,
-                        'error' => $e->getMessage(),
+                        'telegram_id' =>
+                            $notifyUser->telegram_id,
+
+                        'lobby_id' =>
+                            $lobby->id,
+
+                        'error' =>
+                            $e->getMessage(),
                     ]
                 );
             }
         }
 
         /*
-         * =========================================================
-         * 2. УВЕДОМЛЕНИЯ В ГРУППЫ
-         * =========================================================
-         */
+        |--------------------------------------------------------------------------
+        | 2. УВЕДОМЛЕНИЯ В ГРУППЫ
+        |--------------------------------------------------------------------------
+        */
 
         $groups = BotGroup::query()
-            ->where('is_active', true)
+            ->where(
+                'is_active',
+                true
+            )
             ->get();
 
         foreach ($groups as $group) {
+
             try {
+
                 $telegram->sendMessage([
                     'chat_id' => $group->chat_id,
+
                     'text' => $text,
+
+                    'parse_mode' => 'HTML',
+
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
 
                 Log::info(
                     'Уведомление о новом лобби отправлено в группу',
                     [
-                        'group_id' => $group->chat_id,
-                        'group_title' => $group->title,
-                        'lobby_id' => $lobby->id,
+                        'group_id' =>
+                            $group->chat_id,
+
+                        'group_title' =>
+                            $group->title,
+
+                        'lobby_id' =>
+                            $lobby->id,
                     ]
                 );
 
             } catch (\Throwable $e) {
+
                 Log::warning(
                     'Не удалось отправить уведомление о новом лобби в группу',
                     [
-                        'group_id' => $group->chat_id,
-                        'group_title' => $group->title,
-                        'lobby_id' => $lobby->id,
-                        'error' => $e->getMessage(),
+                        'group_id' =>
+                            $group->chat_id,
+
+                        'group_title' =>
+                            $group->title,
+
+                        'lobby_id' =>
+                            $lobby->id,
+
+                        'error' =>
+                            $e->getMessage(),
                     ]
                 );
             }

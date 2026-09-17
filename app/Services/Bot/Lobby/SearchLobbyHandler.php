@@ -5,7 +5,6 @@ namespace App\Services\Bot\Lobby;
 use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
-use App\Models\LobbyPlayer;
 
 class SearchLobbyHandler
 {
@@ -26,11 +25,8 @@ class SearchLobbyHandler
             return false;
         }
 
-        $chatId =
-            $message->chat->id ?? null;
-
-        $telegramId =
-            $message->from->id ?? null;
+        $chatId = $message->chat->id ?? null;
+        $telegramId = $message->from->id ?? null;
 
         if (!$telegramId || !$chatId) {
             return false;
@@ -55,82 +51,12 @@ class SearchLobbyHandler
         |--------------------------------------------------------------------------
         | Удаляем сессию создания лобби
         |--------------------------------------------------------------------------
-        |
-        | ВАЖНО:
-        | bot_sessions.telegram_user_id =
-        | telegram_users.id
-        |
-        | Поэтому используем $telegramUser->id,
-        | а НЕ $telegramId.
-        |
         */
 
         BotSession::where(
             'telegram_user_id',
             $telegramUser->id
         )->delete();
-
-        $telegramUserId =
-            $telegramUser->id;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем, не находится ли пользователь уже
-        | в активном лобби
-        |--------------------------------------------------------------------------
-        */
-
-        $already = LobbyPlayer::where(
-            'telegram_user_id',
-            $telegramUserId
-        )
-        ->whereHas(
-            'lobby',
-            function ($query) {
-                $query->whereIn(
-                    'status',
-                    [
-                        'waiting',
-                        'playing'
-                    ]
-                );
-            }
-        )
-        ->exists();
-
-        if ($already) {
-
-            $telegram->sendMessage([
-                'chat_id' =>
-                    $chatId,
-
-                'text' =>
-                    "⚠️ Вы уже состоите в активном лобби.\n\n" .
-                    "Сначала выйдите из него через 🎮 Моё лобби.",
-
-                'reply_markup' => json_encode([
-                    'keyboard' => [
-                        [
-                            [
-                                'text' =>
-                                    '🎮 Моё лобби'
-                            ]
-                        ],
-
-                        [
-                            [
-                                'text' =>
-                                    '⬅️ Главное меню'
-                            ]
-                        ]
-                    ],
-
-                    'resize_keyboard' => true
-                ])
-            ]);
-
-            return true;
-        }
 
         /*
         |--------------------------------------------------------------------------
@@ -145,7 +71,7 @@ class SearchLobbyHandler
         ->where(
             'creator_id',
             '!=',
-            $telegramUserId
+            $telegramUser->id
         )
         ->with('creator')
         ->withCount('players')
@@ -165,7 +91,7 @@ class SearchLobbyHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Пропускаем заполненные
+            | Пропускаем заполненные лобби
             |--------------------------------------------------------------------------
             */
 
@@ -173,6 +99,16 @@ class SearchLobbyHandler
                 $lobby->players_count >=
                 $lobby->max_players
             ) {
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Если у лобби ещё нет кода игры
+            |--------------------------------------------------------------------------
+            */
+
+            if (empty($lobby->game_room_code)) {
                 continue;
             }
 
@@ -211,6 +147,16 @@ class SearchLobbyHandler
 
             /*
             |--------------------------------------------------------------------------
+            | Прямая ссылка в игру
+            |--------------------------------------------------------------------------
+            */
+
+            $gameLink =
+                "https://play.suspects.io/?code=" .
+                $lobby->game_room_code;
+
+            /*
+            |--------------------------------------------------------------------------
             | Отправляем лобби
             |--------------------------------------------------------------------------
             */
@@ -223,6 +169,7 @@ class SearchLobbyHandler
                     "🎮 Лобби #{$lobby->id}\n" .
                     "👑 Хост: {$hostNickname}\n" .
                     "👥 Игроки: {$lobby->players_count}/{$lobby->max_players}\n" .
+                    "🔑 Код: {$lobby->game_room_code}\n" .
                     "⏳ Ожидание игроков",
 
                 'reply_markup' => json_encode([
@@ -230,14 +177,25 @@ class SearchLobbyHandler
                         [
                             [
                                 'text' =>
-                                    "🚪 Войти #{$lobby->id}",
+                                    '🎮 Войти в игру',
 
-                                'callback_data' =>
-                                    "join_lobby_{$lobby->id}"
-                            ]
-                        ]
-                    ]
-                ])
+                                'url' =>
+                                    $gameLink,
+                            ],
+                        ],
+                        [
+                            [
+                                'text' =>
+                                    '📋 Скопировать код',
+
+                                'copy_text' => [
+                                    'text' =>
+                                        $lobby->game_room_code,
+                                ],
+                            ],
+                        ],
+                    ],
+                ]),
             ]);
         }
 
@@ -254,7 +212,7 @@ class SearchLobbyHandler
                     $chatId,
 
                 'text' =>
-                    "😔 Сейчас нет доступных лобби."
+                    "😔 Сейчас нет доступных лобби.",
             ]);
         }
 
@@ -284,34 +242,34 @@ class SearchLobbyHandler
                     [
                         [
                             'text' =>
-                                '🔄 Обновить поиск'
-                        ]
+                                '🔄 Обновить поиск',
+                        ],
                     ],
 
                     [
                         [
                             'text' =>
-                                '➕ Создать лобби'
-                        ]
+                                '➕ Создать лобби',
+                        ],
                     ],
 
                     [
                         [
                             'text' =>
-                                '🎮 Моё лобби'
-                        ]
+                                '🎮 Моё лобби',
+                        ],
                     ],
 
                     [
                         [
                             'text' =>
-                                '⬅️ Главное меню'
-                        ]
-                    ]
+                                '⬅️ Главное меню',
+                        ],
+                    ],
                 ],
 
-                'resize_keyboard' => true
-            ])
+                'resize_keyboard' => true,
+            ]),
         ]);
 
         return true;
