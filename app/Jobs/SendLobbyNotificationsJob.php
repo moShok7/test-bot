@@ -158,7 +158,12 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     'parse_mode' => 'HTML',
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
-
+                $telegram->pinChatMessage([
+    'chat_id' => $group->chat_id,
+    'message_id' => $response->getMessageId(),
+    'disable_notification' => true,
+]);
+                
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => $notifyUser->id,
