@@ -61,7 +61,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         /*
         |--------------------------------------------------------------------------
-        | Прямая ссылка в игру
+        | Ссылка в игру
         |--------------------------------------------------------------------------
         */
 
@@ -170,15 +170,29 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                     'parse_mode' => 'HTML',
 
-                    'reply_markup' => json_encode($replyMarkup),
+                    'reply_markup' => json_encode(
+                        $replyMarkup
+                    ),
                 ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем личное уведомление
+                |--------------------------------------------------------------------------
+                */
 
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
 
                     'telegram_user_id' => $notifyUser->id,
 
-                    'telegram_message_id' => $response->getMessageId(),
+                    'telegram_message_id' =>
+                        $response->getMessageId(),
+
+                    'chat_id' =>
+                        (string) $notifyUser->telegram_id,
+
+                    'chat_type' => 'private',
                 ]);
 
             } catch (\Throwable $e) {
@@ -215,14 +229,37 @@ class SendLobbyNotificationsJob implements ShouldQueue
         foreach ($groups as $group) {
 
             try {
-                $telegram->sendMessage([
+
+                $response = $telegram->sendMessage([
                     'chat_id' => $group->chat_id,
 
                     'text' => $text,
 
                     'parse_mode' => 'HTML',
 
-                    'reply_markup' => json_encode($replyMarkup),
+                    'reply_markup' => json_encode(
+                        $replyMarkup
+                    ),
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем групповое уведомление
+                |--------------------------------------------------------------------------
+                */
+
+                LobbyNotification::create([
+                    'lobby_id' => $lobby->id,
+
+                    'telegram_user_id' => null,
+
+                    'telegram_message_id' =>
+                        $response->getMessageId(),
+
+                    'chat_id' =>
+                        (string) $group->chat_id,
+
+                    'chat_type' => 'group',
                 ]);
 
                 Log::info(
@@ -273,7 +310,11 @@ class SendLobbyNotificationsJob implements ShouldQueue
             ->whereHas(
                 'lobby',
                 function ($query) {
-                    $query->where('status', '!=', 'waiting');
+                    $query->where(
+                        'status',
+                        '!=',
+                        'waiting'
+                    );
                 }
             )
             ->get();
@@ -284,21 +325,18 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 /*
                 |--------------------------------------------------------------------------
-                | Получаем Telegram ID пользователя
+                | Удаляем сообщение напрямую через chat_id
                 |--------------------------------------------------------------------------
                 */
 
-                $user = TelegramUser::find(
-                    $notification->telegram_user_id
-                );
-
                 if (
-                    $user &&
+                    $notification->chat_id &&
                     $notification->telegram_message_id
                 ) {
+
                     $telegram->deleteMessage([
                         'chat_id' =>
-                            $user->telegram_id,
+                            $notification->chat_id,
 
                         'message_id' =>
                             $notification->telegram_message_id,
@@ -319,6 +357,12 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     [
                         'notification_id' =>
                             $notification->id,
+
+                        'chat_id' =>
+                            $notification->chat_id,
+
+                        'chat_type' =>
+                            $notification->chat_type,
 
                         'error' =>
                             $e->getMessage(),
