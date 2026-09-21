@@ -9,6 +9,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('lobby_notifications', function (Blueprint $table) {
+            
             $table->string('chat_id')->nullable()->after('telegram_user_id');
             $table->string('chat_type')->nullable()->after('chat_id');
         });
