@@ -6,6 +6,7 @@ use App\Models\BotGroup;
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
 use App\Models\TelegramUser;
+use App\Models\LobbyPlayer;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +30,14 @@ class SendLobbyNotificationsJob implements ShouldQueue
         if (!$lobby) {
             return;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | УДАЛЯЕМ СТАРЫЕ НЕАКТУАЛЬНЫЕ УВЕДОМЛЕНИЯ
+        |--------------------------------------------------------------------------
+        */
+
+        $this->deleteOldNotifications($telegram);
 
         /*
         |--------------------------------------------------------------------------
@@ -57,7 +66,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
         */
 
         $gameLink =
-            "https://play.suspects.io/?code=" .
+            'https://play.suspects.io/?code=' .
             $lobby->game_room_code;
 
         /*
@@ -118,7 +127,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
         |--------------------------------------------------------------------------
         */
 
-        $activePlayerIds = \App\Models\LobbyPlayer::whereHas(
+        $activePlayerIds = LobbyPlayer::whereHas(
             'lobby',
             function ($query) {
                 $query->whereIn(
@@ -206,7 +215,6 @@ class SendLobbyNotificationsJob implements ShouldQueue
         foreach ($groups as $group) {
 
             try {
-
                 $telegram->sendMessage([
                     'chat_id' => $group->chat_id,
 
@@ -250,6 +258,81 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     ]
                 );
             }
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Удаление старых уведомлений
+    |--------------------------------------------------------------------------
+    */
+
+    private function deleteOldNotifications(Api $telegram): void
+    {
+        $oldNotifications = LobbyNotification::query()
+            ->whereHas(
+                'lobby',
+                function ($query) {
+                    $query->where('status', '!=', 'waiting');
+                }
+            )
+            ->get();
+
+        foreach ($oldNotifications as $notification) {
+
+            try {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Получаем Telegram ID пользователя
+                |--------------------------------------------------------------------------
+                */
+
+                $user = TelegramUser::find(
+                    $notification->telegram_user_id
+                );
+
+                if (
+                    $user &&
+                    $notification->telegram_message_id
+                ) {
+                    $telegram->deleteMessage([
+                        'chat_id' =>
+                            $user->telegram_id,
+
+                        'message_id' =>
+                            $notification->telegram_message_id,
+                    ]);
+                }
+
+            } catch (\Throwable $e) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сообщение уже могло быть удалено вручную.
+                | Это не должно ломать Job.
+                |--------------------------------------------------------------------------
+                */
+
+                Log::debug(
+                    'Не удалось удалить старое уведомление',
+                    [
+                        'notification_id' =>
+                            $notification->id,
+
+                        'error' =>
+                            $e->getMessage(),
+                    ]
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Удаляем запись из БД в любом случае
+            |--------------------------------------------------------------------------
+            */
+
+            $notification->delete();
         }
     }
 }
