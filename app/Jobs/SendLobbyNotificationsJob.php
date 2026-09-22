@@ -158,12 +158,13 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     'parse_mode' => 'HTML',
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
-                $telegram->pinChatMessage([
-    'chat_id' => $group->chat_id,
-    'message_id' => $response->getMessageId(),
-    'disable_notification' => true,
-]);
-                
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем личное уведомление
+                |--------------------------------------------------------------------------
+                */
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => $notifyUser->id,
@@ -212,7 +213,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 /*
                 |--------------------------------------------------------------------------
-                | Отправляем сообщение
+                | Отправляем сообщение в группу
                 |--------------------------------------------------------------------------
                 */
 
@@ -225,9 +226,15 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 $messageId = $response->getMessageId();
 
+                Log::info('Сообщение о лобби отправлено в группу', [
+                    'lobby_id' => $lobby->id,
+                    'chat_id' => $group->chat_id,
+                    'message_id' => $messageId,
+                ]);
+
                 /*
                 |--------------------------------------------------------------------------
-                | Закрепляем сообщение
+                | Закрепляем сообщение в группе
                 |--------------------------------------------------------------------------
                 */
 
@@ -348,7 +355,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
             /*
             |--------------------------------------------------------------------------
-            | Удаляем запись из БД даже если Telegram уже удалил сообщение
+            | Удаляем запись из БД
             |--------------------------------------------------------------------------
             */
 
