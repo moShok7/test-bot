@@ -10,6 +10,8 @@ class LobbyNotification extends Model
         'lobby_id',
         'telegram_user_id',
         'telegram_message_id',
+        'chat_id',
+        'chat_type',
     ];
 
     public function telegramUser()

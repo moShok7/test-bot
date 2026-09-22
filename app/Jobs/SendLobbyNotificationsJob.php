@@ -6,6 +6,7 @@ use App\Models\BotGroup;
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
 use App\Models\TelegramUser;
+use App\Models\LobbyPlayer;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -32,7 +33,15 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         /*
         |--------------------------------------------------------------------------
-        | Если лобби уже закрыто — ничего не отправляем
+        | Удаляем старые уведомления
+        |--------------------------------------------------------------------------
+        */
+
+        $this->deleteOldNotifications($telegram);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Проверяем текущее лобби
         |--------------------------------------------------------------------------
         */
 
@@ -40,29 +49,21 @@ class SendLobbyNotificationsJob implements ShouldQueue
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Если код игры отсутствует — уведомление не отправляем
-        |--------------------------------------------------------------------------
-        */
-
         if (empty($lobby->game_room_code)) {
             return;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Прямая ссылка в игру
+        | Ссылка в игру
         |--------------------------------------------------------------------------
         */
 
-        $gameLink =
-            "https://play.suspects.io/?code=" .
-            $lobby->game_room_code;
+        $gameLink = 'https://play.suspects.io/?code=' . $lobby->game_room_code;
 
         /*
         |--------------------------------------------------------------------------
-        | Имя создателя
+        | Создатель
         |--------------------------------------------------------------------------
         */
 
@@ -76,7 +77,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         /*
         |--------------------------------------------------------------------------
-        | Текст уведомления
+        | Текст
         |--------------------------------------------------------------------------
         */
 
@@ -118,15 +119,12 @@ class SendLobbyNotificationsJob implements ShouldQueue
         |--------------------------------------------------------------------------
         */
 
-        $activePlayerIds = \App\Models\LobbyPlayer::whereHas(
+        $activePlayerIds = LobbyPlayer::whereHas(
             'lobby',
             function ($query) {
                 $query->whereIn(
                     'status',
-                    [
-                        'waiting',
-                        'playing',
-                    ]
+                    ['waiting', 'playing']
                 );
             }
         )
@@ -156,35 +154,33 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 $response = $telegram->sendMessage([
                     'chat_id' => $notifyUser->telegram_id,
-
                     'text' => $text,
-
                     'parse_mode' => 'HTML',
-
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
 
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем личное уведомление
+                |--------------------------------------------------------------------------
+                */
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
-
                     'telegram_user_id' => $notifyUser->id,
-
                     'telegram_message_id' => $response->getMessageId(),
+                    'chat_id' => (string) $notifyUser->telegram_id,
+                    'chat_type' => 'private',
                 ]);
 
             } catch (\Throwable $e) {
 
                 Log::warning(
-                    'Не удалось отправить уведомление о новом лобби',
+                    'Не удалось отправить личное уведомление',
                     [
-                        'telegram_id' =>
-                            $notifyUser->telegram_id,
-
-                        'lobby_id' =>
-                            $lobby->id,
-
-                        'error' =>
-                            $e->getMessage(),
+                        'telegram_id' => $notifyUser->telegram_id,
+                        'lobby_id' => $lobby->id,
+                        'error' => $e->getMessage(),
                     ]
                 );
             }
@@ -197,59 +193,173 @@ class SendLobbyNotificationsJob implements ShouldQueue
         */
 
         $groups = BotGroup::query()
-            ->where(
-                'is_active',
-                true
-            )
+            ->where('is_active', true)
             ->get();
+
+        Log::info('Группы для уведомления', [
+            'count' => $groups->count(),
+            'lobby_id' => $lobby->id,
+        ]);
 
         foreach ($groups as $group) {
 
             try {
 
-                $telegram->sendMessage([
+                Log::info('Отправляем уведомление в группу', [
                     'chat_id' => $group->chat_id,
+                    'title' => $group->title,
+                    'lobby_id' => $lobby->id,
+                ]);
 
+                /*
+                |--------------------------------------------------------------------------
+                | Отправляем сообщение в группу
+                |--------------------------------------------------------------------------
+                */
+
+                $response = $telegram->sendMessage([
+                    'chat_id' => $group->chat_id,
                     'text' => $text,
-
                     'parse_mode' => 'HTML',
-
                     'reply_markup' => json_encode($replyMarkup),
                 ]);
 
-                Log::info(
-                    'Уведомление о новом лобби отправлено в группу',
-                    [
-                        'group_id' =>
-                            $group->chat_id,
+                $messageId = $response->getMessageId();
 
-                        'group_title' =>
-                            $group->title,
+                Log::info('Сообщение о лобби отправлено в группу', [
+                    'lobby_id' => $lobby->id,
+                    'chat_id' => $group->chat_id,
+                    'message_id' => $messageId,
+                ]);
 
-                        'lobby_id' =>
-                            $lobby->id,
-                    ]
-                );
+                /*
+                |--------------------------------------------------------------------------
+                | Закрепляем сообщение в группе
+                |--------------------------------------------------------------------------
+                */
+
+                try {
+
+                    $telegram->pinChatMessage([
+                        'chat_id' => $group->chat_id,
+                        'message_id' => $messageId,
+                        'disable_notification' => true,
+                    ]);
+
+                    Log::info('Лобби закреплено в группе', [
+                        'lobby_id' => $lobby->id,
+                        'chat_id' => $group->chat_id,
+                        'message_id' => $messageId,
+                    ]);
+
+                } catch (\Throwable $e) {
+
+                    Log::warning('Не удалось закрепить лобби в группе', [
+                        'lobby_id' => $lobby->id,
+                        'chat_id' => $group->chat_id,
+                        'message_id' => $messageId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Сохраняем сообщение группы
+                |--------------------------------------------------------------------------
+                */
+
+                $notification = LobbyNotification::create([
+                    'lobby_id' => $lobby->id,
+                    'telegram_user_id' => null,
+                    'telegram_message_id' => $messageId,
+                    'chat_id' => (string) $group->chat_id,
+                    'chat_type' => 'group',
+                ]);
+
+                Log::info('Групповое уведомление сохранено', [
+                    'notification_id' => $notification->id,
+                    'lobby_id' => $lobby->id,
+                    'chat_id' => $notification->chat_id,
+                    'chat_type' => $notification->chat_type,
+                    'message_id' => $notification->telegram_message_id,
+                ]);
 
             } catch (\Throwable $e) {
 
                 Log::warning(
-                    'Не удалось отправить уведомление о новом лобби в группу',
+                    'Не удалось отправить уведомление в группу',
                     [
-                        'group_id' =>
-                            $group->chat_id,
-
-                        'group_title' =>
-                            $group->title,
-
-                        'lobby_id' =>
-                            $lobby->id,
-
-                        'error' =>
-                            $e->getMessage(),
+                        'group_id' => $group->chat_id,
+                        'group_title' => $group->title,
+                        'lobby_id' => $lobby->id,
+                        'error' => $e->getMessage(),
                     ]
                 );
             }
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Удаление старых уведомлений
+    |--------------------------------------------------------------------------
+    */
+
+    private function deleteOldNotifications(Api $telegram): void
+    {
+        $oldNotifications = LobbyNotification::query()
+            ->whereHas(
+                'lobby',
+                function ($query) {
+                    $query->where(
+                        'status',
+                        '!=',
+                        'waiting'
+                    );
+                }
+            )
+            ->get();
+
+        foreach ($oldNotifications as $notification) {
+
+            try {
+
+                if (
+                    !empty($notification->chat_id) &&
+                    !empty($notification->telegram_message_id)
+                ) {
+
+                    $telegram->deleteMessage([
+                        'chat_id' => $notification->chat_id,
+                        'message_id' => $notification->telegram_message_id,
+                    ]);
+
+                    Log::info('Уведомление удалено из Telegram', [
+                        'notification_id' => $notification->id,
+                        'chat_id' => $notification->chat_id,
+                        'chat_type' => $notification->chat_type,
+                        'message_id' => $notification->telegram_message_id,
+                    ]);
+                }
+
+            } catch (\Throwable $e) {
+
+                Log::warning('Не удалось удалить уведомление', [
+                    'notification_id' => $notification->id,
+                    'chat_id' => $notification->chat_id,
+                    'chat_type' => $notification->chat_type,
+                    'message_id' => $notification->telegram_message_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Удаляем запись из БД
+            |--------------------------------------------------------------------------
+            */
+
+            $notification->delete();
         }
     }
 }
