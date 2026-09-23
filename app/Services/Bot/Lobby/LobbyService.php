@@ -33,49 +33,106 @@ class LobbyService
 
         /*
         |--------------------------------------------------------------------------
-        | Удаляем уведомления "Новое лобби!"
+        | Получаем уведомления этого лобби
         |--------------------------------------------------------------------------
         */
 
         $notifications = LobbyNotification::where(
             'lobby_id',
             $lobby->id
-        )
-        ->with('telegramUser')
-        ->get();
+        )->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Удаляем сообщения уведомлений из Telegram
+        |--------------------------------------------------------------------------
+        */
 
         foreach ($notifications as $notification) {
 
-            if (!$notification->telegramUser) {
+            if (
+                empty($notification->chat_id) ||
+                empty($notification->telegram_message_id)
+            ) {
                 continue;
             }
 
             try {
 
-                $this->telegram->deleteMessage([
-                    'chat_id' =>
-                        $notification->telegramUser->telegram_id,
+                /*
+                |--------------------------------------------------------------------------
+                | Если это группа, сначала открепляем сообщение
+                |--------------------------------------------------------------------------
+                */
 
-                    'message_id' =>
-                        $notification->telegram_message_id,
+                if ($notification->chat_type === 'group') {
+
+                    try {
+
+                        $this->telegram->unpinChatMessage([
+                            'chat_id' => $notification->chat_id,
+                            'message_id' => $notification->telegram_message_id,
+                        ]);
+
+                        \Log::info(
+                            'Уведомление откреплено',
+                            [
+                                'lobby_id' => $lobby->id,
+                                'chat_id' => $notification->chat_id,
+                                'message_id' => $notification->telegram_message_id,
+                            ]
+                        );
+
+                    } catch (\Throwable $e) {
+
+                        /*
+                        | Если сообщение уже не закреплено,
+                        | это не критическая ошибка.
+                        */
+
+                        \Log::warning(
+                            'Не удалось открепить уведомление',
+                            [
+                                'lobby_id' => $lobby->id,
+                                'chat_id' => $notification->chat_id,
+                                'message_id' => $notification->telegram_message_id,
+                                'error' => $e->getMessage(),
+                            ]
+                        );
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Удаляем сообщение
+                |--------------------------------------------------------------------------
+                */
+
+                $this->telegram->deleteMessage([
+                    'chat_id' => $notification->chat_id,
+                    'message_id' => $notification->telegram_message_id,
                 ]);
+
+                \Log::info(
+                    'Уведомление о лобби удалено из Telegram',
+                    [
+                        'lobby_id' => $lobby->id,
+                        'chat_id' => $notification->chat_id,
+                        'chat_type' => $notification->chat_type,
+                        'message_id' => $notification->telegram_message_id,
+                    ]
+                );
 
             } catch (\Throwable $e) {
 
                 \Log::warning(
                     'Не удалось удалить уведомление о новом лобби',
                     [
-                        'lobby_id' =>
-                            $lobby->id,
-
-                        'telegram_id' =>
-                            $notification->telegramUser->telegram_id,
-
-                        'message_id' =>
-                            $notification->telegram_message_id,
-
-                        'error' =>
-                            $e->getMessage()
+                        'lobby_id' => $lobby->id,
+                        'chat_id' => $notification->chat_id,
+                        'chat_type' => $notification->chat_type,
+                        'message_id' => $notification->telegram_message_id,
+                        'error' => $e->getMessage(),
                     ]
                 );
             }
@@ -104,23 +161,17 @@ class LobbyService
                 continue;
             }
 
-            $text =
-                "❌ Лобби #{$lobby->id} было закрыто.";
+            $text = "❌ Лобби #{$lobby->id} было закрыто.";
 
             if ($reason) {
-
-                $text .=
-                    "\n\nПричина: {$reason}";
+                $text .= "\n\nПричина: {$reason}";
             }
 
             try {
 
                 $this->telegram->sendMessage([
-                    'chat_id' =>
-                        $player->telegramUser->telegram_id,
-
-                    'text' =>
-                        $text,
+                    'chat_id' => $player->telegramUser->telegram_id,
+                    'text' => $text,
                 ]);
 
             } catch (\Throwable $e) {
@@ -128,14 +179,9 @@ class LobbyService
                 \Log::warning(
                     'Не удалось отправить уведомление об удалении лобби',
                     [
-                        'lobby_id' =>
-                            $lobby->id,
-
-                        'telegram_id' =>
-                            $player->telegramUser->telegram_id,
-
-                        'error' =>
-                            $e->getMessage()
+                        'lobby_id' => $lobby->id,
+                        'telegram_id' => $player->telegramUser->telegram_id,
+                        'error' => $e->getMessage(),
                     ]
                 );
             }
@@ -170,12 +216,12 @@ class LobbyService
             'status',
             'waiting'
         )
-        ->where(
-            'updated_at',
-            '<=',
-            now()->subMinutes(77)
-        )
-        ->get();
+            ->where(
+                'updated_at',
+                '<=',
+                now()->subMinutes(77)
+            )
+            ->get();
 
         foreach ($lobbies as $lobby) {
 
