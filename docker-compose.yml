@@ -4,6 +4,8 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
     container_name: test_bot_app
+    env_file:
+      - .env
     volumes:
       - ./:/var/www
     depends_on:
@@ -75,6 +77,8 @@ services:
       dockerfile: docker/php/Dockerfile
     container_name: test_bot_worker
     command: php artisan queue:work --queue=telegram,default --sleep=1 --tries=3 --timeout=120
+    env_file:
+      - .env
     volumes:
       - ./:/var/www
     depends_on:
