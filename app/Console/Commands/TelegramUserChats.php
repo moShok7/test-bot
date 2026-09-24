@@ -17,30 +17,28 @@ class TelegramUserChats extends Command
 
         $this->info('Получаю группы Telegram-аккаунта...');
 
-        $dialogs = $telegram->getDialogs();
+        $dialogIds = $telegram->getDialogIds();
 
-        foreach ($dialogs as $dialog) {
-            $peer = $dialog['peer'] ?? null;
+        foreach ($dialogIds as $peer) {
+            try {
+                $chat = $telegram->getPwrChat($peer);
 
-            if (!$peer) {
-                continue;
-            }
+                $type = $chat['type'] ?? null;
 
-            // Обычная группа
-            if (isset($peer['chat_id'])) {
+                // Только группы и супергруппы
+                if ($type !== 'group' && $type !== 'supergroup') {
+                    continue;
+                }
+
+                $id = $chat['id'] ?? 'unknown';
+                $title = $chat['title'] ?? 'Без названия';
+
                 $this->line(
-                    'GROUP | ID: ' . $peer['chat_id'] .
-                    ' | ' . ($dialog['name'] ?? 'Без названия')
+                    $type . ' | ID: ' . $id . ' | ' . $title
                 );
-
-                continue;
-            }
-
-            // Супергруппа / канал
-            if (isset($peer['channel_id'])) {
-                $this->line(
-                    'CHANNEL/SUPERGROUP | ID: ' . $peer['channel_id'] .
-                    ' | ' . ($dialog['name'] ?? 'Без названия')
+            } catch (\Throwable $e) {
+                $this->warn(
+                    'Не удалось получить чат: ' . $e->getMessage()
                 );
             }
         }
