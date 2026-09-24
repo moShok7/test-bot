@@ -277,34 +277,30 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     */
 
                     $mtprotoReplyMarkup = [
-                        '_' => 'replyInlineMarkup',
-
-                        'rows' => [
-                            [
-                                '_' => 'keyboardButtonRow',
-
-                                'buttons' => [
-                                    [
-                                        '_' => 'keyboardButtonUrl',
-                                        'text' => '🎮 Войти в игру',
-                                        'url' => $gameLink,
-                                    ],
-                                ],
-                            ],
-
-                            [
-                                '_' => 'keyboardButtonRow',
-
-                                'buttons' => [
-                                    [
-                                        '_' => 'keyboardButtonCopy',
-                                        'text' => '📋 Скопировать код',
-                                        'copy_text' => $lobby->game_room_code,
-                                    ],
-                                ],
-                            ],
-                        ],
-                    ];
+    '_' => 'replyInlineMarkup',
+    'rows' => [
+        [
+            '_' => 'keyboardButtonRow',
+            'buttons' => [
+                [
+                    '_' => 'keyboardButtonUrl',
+                    'text' => '🎮 Войти в игру',
+                    'url' => $gameLink,
+                ],
+            ],
+        ],
+        [
+            '_' => 'keyboardButtonRow',
+            'buttons' => [
+                [
+                    '_' => 'keyboardButtonCopy',
+                    'text' => '📋 Скопировать код',
+                    'copy_text' => (string) $lobby->game_room_code,
+                ],
+            ],
+        ],
+    ],
+];
 
                     /*
                     |--------------------------------------------------------------------------
