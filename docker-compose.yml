@@ -90,6 +90,7 @@ services:
 
 networks:
   sus_lobby_network:
+    enable_ipv6: false
 
 volumes:
   sus-lobby_mysql_data:
