@@ -111,7 +111,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         /*
         |--------------------------------------------------------------------------
-        | 1. ЛИЧНЫЕ УВЕДО МЛЕНИЯ
+        | 1. ЛИЧНЫЕ УВЕДОМЛЕНИЯ
         |--------------------------------------------------------------------------
         */
 
@@ -244,13 +244,13 @@ class SendLobbyNotificationsJob implements ShouldQueue
         | 3. ВНЕШНИЕ ГРУППЫ ЧЕРЕЗ MTProto
         |--------------------------------------------------------------------------
         |
-        | Это группы, которые есть у @moShok7,
-        | но которых НЕТ в bot_groups.
+        | Одно сообщение:
+        | - информация о лобби
+        | - создатель
+        | - жирный код
+        | - ссылка на игру
         |
-        | В MTProto отправляем 2 сообщения:
-        |
-        | 1. Информация о лобби + ссылка
-        | 2. Только код
+        | После отправки сообщение закрепляется.
         |
         */
 
@@ -266,16 +266,16 @@ class SendLobbyNotificationsJob implements ShouldQueue
                 try {
                     /*
                     |--------------------------------------------------------------------------
-                    | Первое сообщение: информация о лобби + ссылка
+                    | Одно сообщение
                     |--------------------------------------------------------------------------
                     */
 
                     $mtprotoText =
-                        "🔔 Новое лобби!\n\n" .
-                        "🎮 Лобби #{$lobby->id}\n" .
+                        "🔔 <b>Новое лобби!</b>\n\n" .
+                        "🎮 <b>Лобби #{$lobby->id}</b>\n" .
                         "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n" .
-                        "🔑 {$roomCode}\n\n" .
-                        "👇 Вход в игру:\n" .
+                        "🔑 <b>Код: <code>{$roomCode}</code></b>\n\n" .
+                        "👇 <b>Вход в игру:</b>\n" .
                         "{$gameLink}";
 
                     $gameMessageId = $userTelegram->sendMessage(
@@ -292,7 +292,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Закрепляем основное сообщение
+                    | Закрепляем сообщение
                     |--------------------------------------------------------------------------
                     */
 
@@ -322,7 +322,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Сохраняем первое сообщение
+                    | Сохраняем уведомление
                     |--------------------------------------------------------------------------
                     */
 
@@ -330,40 +330,6 @@ class SendLobbyNotificationsJob implements ShouldQueue
                         'lobby_id' => $lobby->id,
                         'telegram_user_id' => null,
                         'telegram_message_id' => $gameMessageId,
-                        'chat_id' => (string) $group['chat_id'],
-                        'chat_type' => 'mtproto_group',
-                    ]);
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Второе сообщение: только код
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $codeText = "<b><code>{$roomCode}</code></b>";
-
-                    $codeMessageId = $userTelegram->sendMessage(
-                        $group['chat_id'],
-                        $codeText
-                    );
-
-                    Log::info('MTProto код отправлен', [
-                        'lobby_id' => $lobby->id,
-                        'chat_id' => $group['chat_id'],
-                        'title' => $group['title'],
-                        'message_id' => $codeMessageId,
-                    ]);
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Сохраняем второе сообщение
-                    |--------------------------------------------------------------------------
-                    */
-
-                    LobbyNotification::create([
-                        'lobby_id' => $lobby->id,
-                        'telegram_user_id' => null,
-                        'telegram_message_id' => $codeMessageId,
                         'chat_id' => (string) $group['chat_id'],
                         'chat_type' => 'mtproto_group',
                     ]);
