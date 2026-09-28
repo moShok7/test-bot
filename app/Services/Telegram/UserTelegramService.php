@@ -29,7 +29,7 @@ class UserTelegramService
     }
 
     /**
-     * Отправить сообщение через MTProto.
+     * Отправить сообщение через пользовательский Telegram-аккаунт.
      */
     public function sendMessage(
         int|string $chatId,
@@ -47,50 +47,9 @@ class UserTelegramService
         }
 
         $response = $this->telegram->messages->sendMessage(
-            $params,
-            ['botAPI' => true]
+            $params
         );
 
         return (int) $response['message_id'];
-    }
-
-    /**
-     * Закрепить сообщение через MTProto.
-     */
-    public function pinMessage(
-        int|string $chatId,
-        int $messageId
-    ): void {
-        $this->telegram->messages->updatePinnedMessage(
-            peer: $chatId,
-            id: $messageId,
-            silent: true,
-        );
-    }
-
-    /**
-     * Удалить сообщение через MTProto.
-     *
-     * Для supergroup используется channels.deleteMessages.
-     * Для обычной группы используется messages.deleteMessages.
-     */
-    public function deleteMessage(
-        int|string $chatId,
-        int $messageId,
-        string $chatType = 'supergroup'
-    ): void {
-        if ($chatType === 'supergroup') {
-            $this->telegram->channels->deleteMessages(
-                channel: $chatId,
-                id: [$messageId],
-            );
-
-            return;
-        }
-
-        $this->telegram->messages->deleteMessages(
-            id: [$messageId],
-            revoke: true,
-        );
     }
 }
