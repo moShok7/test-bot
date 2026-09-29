@@ -10,14 +10,7 @@ use App\Models\LobbyPlayer;
 
 class CreateLobbyHandler
 {
-    /*
-    |--------------------------------------------------------------------------
-    | Время жизни сессии создания лобби
-    |--------------------------------------------------------------------------
-    */
-
     private const SESSION_TIMEOUT_MINUTES = 5;
-
 
     public function handle($message, $telegram): bool
     {
@@ -129,9 +122,6 @@ class CreateLobbyHandler
         |--------------------------------------------------------------------------
         | Поиск лобби
         |--------------------------------------------------------------------------
-        |
-        | Эти кнопки обрабатывает SearchLobbyHandler.
-        |
         */
 
         if (
@@ -215,13 +205,25 @@ class CreateLobbyHandler
 
                         [
                             [
-                                'text' => '👥 Игроки'
+                                'text' => '❌ Удалить лобби'
                             ]
                         ],
 
                         [
                             [
-                                'text' => '❌ Кикнуть игрока'
+                                'text' => '⬅️ Главное меню'
+                            ]
+                        ]
+
+                    ];
+
+                } else {
+
+                    $keyboard = [
+
+                        [
+                            [
+                                'text' => '👥 Игроки'
                             ]
                         ],
 
@@ -233,18 +235,6 @@ class CreateLobbyHandler
 
                         [
                             [
-                                'text' => '▶️ Начать игру'
-                            ]
-                        ],
-
-                        [
-                            [
-                                'text' => '✏️ Изменить код'
-                            ]
-                        ],
-
-                        [
-                            [
                                 'text' => '🚪 Выйти из лобби'
                             ]
                         ],
@@ -254,29 +244,7 @@ class CreateLobbyHandler
                                 'text' => '⬅️ Главное меню'
                             ]
                         ]
-                    ];
 
-                } else {
-
-                    $keyboard = [
-
-                        [
-                            [
-                                'text' => '🎮 Моё лобби'
-                            ]
-                        ],
-
-                        [
-                            [
-                                'text' => '🚪 Выйти из лобби'
-                            ]
-                        ],
-
-                        [
-                            [
-                                'text' => '⬅️ Главное меню'
-                            ]
-                        ]
                     ];
                 }
 
@@ -285,7 +253,7 @@ class CreateLobbyHandler
 
                     'text' =>
                         "⚠️ Вы уже состоите в активном лобби.\n\n" .
-                        "Откройте: 🎮 Моё лобби",
+                        "Управление лобби доступно ниже.",
 
                     'reply_markup' => json_encode([
                         'keyboard' => $keyboard,
@@ -387,10 +355,6 @@ class CreateLobbyHandler
         |--------------------------------------------------------------------------
         | Проверяем код комнаты
         |--------------------------------------------------------------------------
-        |
-        | Ровно 6 символов.
-        | Только английские буквы A-Z / a-z и цифры 0-9.
-        |
         */
 
         if (!preg_match('/^[A-Za-z0-9]{6}$/', $text)) {
@@ -414,20 +378,11 @@ class CreateLobbyHandler
         */
 
         $lobby = Lobby::create([
-            'creator_id' =>
-                $user->id,
-
-            'game_room_code' =>
-                $text,
-
-            'status' =>
-                'waiting',
-
-            'min_players' =>
-                4,
-
-            'max_players' =>
-                12,
+            'creator_id' => $user->id,
+            'game_room_code' => $text,
+            'status' => 'waiting',
+            'min_players' => 4,
+            'max_players' => 12,
         ]);
 
         /*
@@ -437,14 +392,9 @@ class CreateLobbyHandler
         */
 
         LobbyPlayer::create([
-            'lobby_id' =>
-                $lobby->id,
-
-            'telegram_user_id' =>
-                $user->id,
-
-            'ready' =>
-                false,
+            'lobby_id' => $lobby->id,
+            'telegram_user_id' => $user->id,
+            'ready' => false,
         ]);
 
         /*
@@ -478,10 +428,6 @@ class CreateLobbyHandler
         |--------------------------------------------------------------------------
         | Имя создателя
         |--------------------------------------------------------------------------
-        |
-        | Используем username, если он есть.
-        | Иначе first_name.
-        |
         */
 
         $creatorName = 'Игрок';
@@ -550,7 +496,7 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Обычная клавиатура
+        | Обычная клавиатура после создания
         |--------------------------------------------------------------------------
         */
 
@@ -558,16 +504,15 @@ class CreateLobbyHandler
             'chat_id' => $chatId,
 
             'text' =>
-                '🎮 Управление лобби:',
+                '👑 Управление лобби:',
 
             'reply_markup' => json_encode([
                 'keyboard' => [
                     [
                         [
-                            'text' => '🎮 Моё лобби'
+                            'text' => '❌ Удалить лобби'
                         ]
                     ],
-
                     [
                         [
                             'text' => '⬅️ Главное меню'
