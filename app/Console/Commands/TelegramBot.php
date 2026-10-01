@@ -20,8 +20,8 @@ use App\Services\Bot\Lobby\CreateLobbyHandler;
 use App\Services\Bot\Lobby\SearchLobbyHandler;
 use App\Services\Bot\Lobby\JoinLobbyHandler;
 
-use App\Services\Clan\ClanHandler;
-use App\Services\Clan\ClanModerationService;
+use App\Services\Bot\Clan\ClanHandler;
+use App\Services\Bot\Clan\ClanModerationService;
 
 class TelegramBot extends Command
 {
