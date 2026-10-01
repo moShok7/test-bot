@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Clan;
+namespace App\Services\Bot\Clan;
 
 use Telegram\Bot\Api;
 
