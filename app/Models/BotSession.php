@@ -11,7 +11,9 @@ class BotSession extends Model
         'step',
         'temp_game_nickname',
         'temp_game_id',
-        'change_lobby_code'
+        'change_lobby_code',
+        'temp_clan_name',
+        'temp_clan_chat',
     ];
 
 
