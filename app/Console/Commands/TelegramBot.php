@@ -20,6 +20,9 @@ use App\Services\Bot\Lobby\CreateLobbyHandler;
 use App\Services\Bot\Lobby\SearchLobbyHandler;
 use App\Services\Bot\Lobby\JoinLobbyHandler;
 
+use App\Services\Clan\ClanHandler;
+use App\Services\Clan\ClanModerationService;
+
 class TelegramBot extends Command
 {
     protected $signature = 'telegram:bot';
@@ -40,11 +43,15 @@ class TelegramBot extends Command
 
         $gameProfileHandler = new GameProfileHandler();
 
-        $lobbyService = new LobbyService($telegram);
+        $lobbyService = new LobbyService(
+            $telegram
+        );
 
         $settingsHandler = new SettingsHandler();
 
-        $lobbyHandler = new LobbyHandler($lobbyService);
+        $lobbyHandler = new LobbyHandler(
+            $lobbyService
+        );
 
         $createLobbyHandler = new CreateLobbyHandler();
 
@@ -58,6 +65,16 @@ class TelegramBot extends Command
 
         $adminHandler = new AdminHandler();
 
+        /*
+        |--------------------------------------------------------------------------
+        | Clan handlers
+        |--------------------------------------------------------------------------
+        */
+
+        $clanHandler = new ClanHandler();
+
+        $clanModerationService = new ClanModerationService();
+
         $this->info('Bot started');
 
         $offset = 0;
@@ -69,7 +86,6 @@ class TelegramBot extends Command
         */
 
         while (true) {
-
             try {
 
                 /*
@@ -92,11 +108,9 @@ class TelegramBot extends Command
                 ]);
 
                 foreach ($updates as $update) {
-
                     try {
 
-                        $offset =
-                            $update->updateId + 1;
+                        $offset = $update->updateId + 1;
 
                         /*
                         |--------------------------------------------------------------------------
@@ -106,11 +120,37 @@ class TelegramBot extends Command
 
                         if ($update->callbackQuery) {
 
-                            $callback =
-                                $update->callbackQuery;
+                            $callback = $update->callbackQuery;
 
-                            $callbackData =
-                                $callback->data ?? '';
+                            $callbackData = $callback->data ?? '';
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Клан: вступление
+                            |--------------------------------------------------------------------------
+                            |
+                            | callback_data:
+                            |
+                            | clan_join_TOKEN
+                            |
+                            */
+
+                            if (
+                                str_starts_with(
+                                    $callbackData,
+                                    'clan_'
+                                )
+                            ) {
+
+                                if (
+                                    $clanHandler->handleCallback(
+                                        $callback,
+                                        $telegram
+                                    )
+                                ) {
+                                    continue;
+                                }
+                            }
 
                             /*
                             |--------------------------------------------------------------------------
@@ -127,8 +167,7 @@ class TelegramBot extends Command
 
                                 $kickPlayerHandler->handle(
                                     (object) [
-                                        'callback_query' =>
-                                            $callback
+                                        'callback_query' => $callback
                                     ],
                                     $telegram
                                 );
@@ -149,11 +188,9 @@ class TelegramBot extends Command
                                 )
                             ) {
 
-                                $message =
-                                    $callback->message;
+                                $message = $callback->message;
 
-                                $message['from'] =
-                                    $callback->from;
+                                $message['from'] = $callback->from;
 
                                 $message['text'] =
                                     '🚪 Войти #' .
@@ -201,17 +238,15 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $message =
-                            $update->message;
+                        $message = $update->message;
 
                         if (!$message) {
                             continue;
                         }
 
-                        $text =
-                            trim(
-                                $message->text ?? ''
-                            );
+                        $text = trim(
+                            $message->text ?? ''
+                        );
 
                         $telegramId =
                             $message->from->id ?? null;
@@ -222,8 +257,7 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        $user =
-                            $message->from;
+                        $user = $message->from;
 
                         if (
                             $user &&
@@ -250,21 +284,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | ВАЖНО:
-                        | Команды навигации сбрасывают старую BotSession
-                        |--------------------------------------------------------------------------
-                        |
-                        | Это решает проблему:
-                        |
-                        | Создал лобби
-                        | ↓
-                        | удалил чат
-                        | ↓
-                        | снова открыл бота
-                        | ↓
-                        | нажал другую кнопку
-                        |
-                        | Старая lobby_code сессия больше не мешает.
+                        | Сброс старых BotSession
                         |--------------------------------------------------------------------------
                         */
 
@@ -281,13 +301,6 @@ class TelegramBot extends Command
                                 true
                             )
                         ) {
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | ВАЖНО:
-                            | Используем ID TelegramUser, а не Telegram ID.
-                            |--------------------------------------------------------------------------
-                            */
 
                             $telegramUser =
                                 TelegramUser::where(
@@ -321,7 +334,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Deep Link лобби
+                        | DEEP LINK ЛОББИ
                         |--------------------------------------------------------------------------
                         */
 
@@ -337,6 +350,79 @@ class TelegramBot extends Command
                                 $telegram
                             );
 
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | DEEP LINK КЛАНА
+                        |--------------------------------------------------------------------------
+                        |
+                        | Формат:
+                        |
+                        | /start clan_XXXXXXXXXX
+                        |
+                        */
+
+                        if (
+                            str_starts_with(
+                                $text,
+                                '/start clan_'
+                            )
+                        ) {
+
+                            $clanHandler->handleDeepLink(
+                                $message,
+                                $telegram
+                            );
+
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Модерация клана
+                        |--------------------------------------------------------------------------
+                        |
+                        | /mt @username 10m
+                        | /mt @username 1h
+                        | /mt @username 1d
+                        |
+                        | /mt 10m через reply
+                        |
+                        | /mr @username
+                        | /mr через reply
+                        |
+                        */
+
+                        if (
+                            $clanModerationService->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Система кланов
+                        |--------------------------------------------------------------------------
+                        |
+                        | /mclan
+                        | /ms
+                        |
+                        | Также сюда попадает продолжение
+                        | пошагового создания клана.
+                        |
+                        */
+
+                        if (
+                            $clanHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
                             continue;
                         }
 
@@ -367,7 +453,9 @@ class TelegramBot extends Command
                         if ($text === '/start') {
 
                             /*
-                            | Сбрасываем старую сессию при новом /start
+                            |--------------------------------------------------------------------------
+                            | Сбрасываем старую сессию
+                            |--------------------------------------------------------------------------
                             */
 
                             if ($telegramId) {
@@ -426,8 +514,7 @@ class TelegramBot extends Command
 
                                         ],
 
-                                        'resize_keyboard' =>
-                                            true
+                                        'resize_keyboard' => true
                                     ])
                             ]);
 
@@ -483,8 +570,7 @@ class TelegramBot extends Command
 
                                         ],
 
-                                        'resize_keyboard' =>
-                                            true
+                                        'resize_keyboard' => true
                                     ])
                             ]);
 
@@ -494,10 +580,6 @@ class TelegramBot extends Command
                         /*
                         |--------------------------------------------------------------------------
                         | СОЗДАНИЕ ЛОББИ
-                        |--------------------------------------------------------------------------
-                        |
-                        | ВАЖНО:
-                        | Проверяем раньше общего LobbyHandler.
                         |--------------------------------------------------------------------------
                         */
 
