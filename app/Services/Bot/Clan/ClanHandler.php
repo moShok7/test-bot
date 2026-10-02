@@ -5,6 +5,7 @@ namespace App\Services\Bot\Clan;
 use App\Models\BotSession;
 use App\Models\Clan;
 use App\Models\TelegramUser;
+use App\Services\Clan\ClanService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Telegram\Bot\Api;
@@ -289,8 +290,9 @@ class ClanHandler
             if ($chatText !== 'не указан') {
                 $text .=
                     "💬 Чат клана:\n" .
-                    $chatText .
-                    "\n\n";
+                    "<a href=\"" .
+                    $this->escapeHtml($chatText) .
+                    "\">Открыть чат</a>\n\n";
             }
 
             $text .=
@@ -300,6 +302,7 @@ class ClanHandler
                 'chat_id' => $message->chat->id,
                 'text' => $text,
                 'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true,
                 'reply_markup' => json_encode([
                     'inline_keyboard' => [
                         [
@@ -688,6 +691,7 @@ class ClanHandler
                     'chat_id' => $realChatId,
                     'user_id' => $telegramUser->telegram_id,
                     'message' => $e->getMessage(),
+                    'exception' => get_class($e),
                 ]
             );
 
@@ -741,9 +745,15 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем реальное количество участников
+        | Получаем количество участников
+        |--------------------------------------------------------------------------
+        |
+        | Если Telegram не отдаёт количество, создание клана НЕ прерываем.
+        | Подробная ошибка попадает в laravel.log.
         |--------------------------------------------------------------------------
         */
+
+        $memberCount = 0;
 
         try {
             $countResponse = $telegram->getChatMembersCount([
@@ -753,24 +763,19 @@ class ClanHandler
             $memberCount = (int) $countResponse;
 
         } catch (Throwable $e) {
-            Log::error(
-                'Clan chat member count failed',
+            Log::warning(
+                'Failed to get clan chat member count during creation',
                 [
                     'chat_id' => $realChatId,
-                    'message' => $e->getMessage(),
+                    'chat_type' => $chatType,
+                    'chat_username' => $chat->username ?? null,
+                    'chat_title' => $chat->title ?? null,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
                 ]
             );
 
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ <b>Не удалось получить количество участников чата.</b>\n\n" .
-                    "Telegram вернул ошибку при получении количества участников.\n\n" .
-                    "Убедитесь, что бот находится в этом чате.",
-                'parse_mode' => 'HTML',
-            ]);
-
-            return;
+            $memberCount = 0;
         }
 
         /*
@@ -878,6 +883,12 @@ class ClanHandler
                     : (string) $realChatId
             );
 
+        /*
+        |--------------------------------------------------------------------------
+        | Успешное создание
+        |--------------------------------------------------------------------------
+        */
+
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
             'text' =>
@@ -887,19 +898,27 @@ class ClanHandler
                 "👥 В чате: <b>{$memberCount}</b>\n" .
                 "⚔️ В клане: <b>1</b>\n\n" .
                 "👑 Вы являетесь главой клана.\n\n" .
-                "🔗 <b>Ваша ссылка-приглашение:</b>\n" .
-                "<a href=\"{$this->escapeHtml($inviteLink)}\">👉 Нажать для перехода</a>\n\n" .
-                "Отправьте эту ссылку игрокам, чтобы они могли вступить в клан.",
+                "🔗 <b>Ссылка-приглашение</b>\n" .
+                "Нажмите кнопку ниже, чтобы открыть приглашение.",
             'parse_mode' => 'HTML',
+            'reply_markup' => json_encode([
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' => '⚔️ Открыть приглашение',
+                            'url' => $inviteLink,
+                        ],
+                    ],
+                ],
+            ]),
         ]);
     }
 
     /**
      * Список кланов.
      *
-     * ВАЖНО:
-     * Каждый вызов /ms заново получает количество участников
-     * Telegram-чата через Bot API.
+     * Каждый вызов /ms пытается заново получить
+     * количество участников Telegram-чата.
      */
     private function showClans(
         $message,
@@ -936,7 +955,7 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Обновляем количество участников Telegram-чатов
+        | Обновляем количество участников
         |--------------------------------------------------------------------------
         */
 
@@ -953,9 +972,6 @@ class ClanHandler
                     'member_count_updated_at' => now(),
                 ]);
 
-                /*
-                | Важно: обновляем объект в памяти.
-                */
                 $clan->member_count = $memberCount;
 
             } catch (Throwable $e) {
@@ -965,7 +981,8 @@ class ClanHandler
                         'clan_id' => $clan->id,
                         'clan_name' => $clan->name,
                         'chat_id' => $clan->chat_id,
-                        'message' => $e->getMessage(),
+                        'error' => $e->getMessage(),
+                        'exception' => get_class($e),
                     ]
                 );
             }
@@ -973,7 +990,7 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Сортировка уже по актуальному количеству
+        | Сортировка
         |--------------------------------------------------------------------------
         */
 
@@ -1230,6 +1247,7 @@ class ClanHandler
                     'user_id' => $telegramId,
                     'chat_id' => self::MAIN_CHAT_ID,
                     'message' => $e->getMessage(),
+                    'exception' => get_class($e),
                 ]
             );
 
