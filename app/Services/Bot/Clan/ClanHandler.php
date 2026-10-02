@@ -23,6 +23,7 @@ class ClanHandler
     public function handle($message, Api $telegram): bool
     {
         try {
+
             /*
              * ---------------------------------------------------------
              * CALLBACK
@@ -39,6 +40,35 @@ class ClanHandler
             if ($chatId === 0 || $userId === 0) {
                 return false;
             }
+
+            /*
+             * ---------------------------------------------------------
+             * TELEGRAM USER
+             *
+             * userId = Telegram ID
+             *
+             * telegramUser->id = ID записи в telegram_users
+             * ---------------------------------------------------------
+             */
+            $telegramUser = TelegramUser::query()->firstOrCreate(
+                [
+                    'telegram_id' => $userId,
+                ],
+                [
+                    'username' => $message->from->username ?? null,
+                    'first_name' => $message->from->first_name ?? null,
+                    'last_name' => $message->from->last_name ?? null,
+                ]
+            );
+
+            /*
+             * Обновляем данные пользователя, если они изменились.
+             */
+            $telegramUser->update([
+                'username' => $message->from->username ?? $telegramUser->username,
+                'first_name' => $message->from->first_name ?? $telegramUser->first_name,
+                'last_name' => $message->from->last_name ?? $telegramUser->last_name,
+            ]);
 
             /*
              * ---------------------------------------------------------
@@ -65,9 +95,11 @@ class ClanHandler
              * ---------------------------------------------------------
              */
             if (preg_match('/^\/mclan(?:@\w+)?$/i', $text)) {
+
                 $this->startClanCreation(
                     $message,
-                    $telegram
+                    $telegram,
+                    $telegramUser
                 );
 
                 return true;
@@ -95,8 +127,6 @@ class ClanHandler
             /*
              * ---------------------------------------------------------
              * /mt
-             *
-             * Передаём ClanModerationService.
              * ---------------------------------------------------------
              */
             if (preg_match('/^\/mt(?:@\w+)?(?:\s+.*)?$/i', $text)) {
@@ -106,8 +136,6 @@ class ClanHandler
             /*
              * ---------------------------------------------------------
              * /mr
-             *
-             * Передаём ClanModerationService.
              * ---------------------------------------------------------
              */
             if (preg_match('/^\/mr(?:@\w+)?(?:\s+.*)?$/i', $text)) {
@@ -117,10 +145,14 @@ class ClanHandler
             /*
              * ---------------------------------------------------------
              * ПРОДОЛЖЕНИЕ СОЗДАНИЯ КЛАНА
+             *
+             * ВАЖНО:
+             * BotSession.telegram_user_id хранит
+             * telegram_users.id, а НЕ Telegram ID.
              * ---------------------------------------------------------
              */
             $session = BotSession::query()
-                ->where('telegram_user_id', $userId)
+                ->where('telegram_user_id', $telegramUser->id)
                 ->first();
 
             if (!$session) {
@@ -154,6 +186,7 @@ class ClanHandler
             ]);
 
             try {
+
                 $telegram->sendMessage([
                     'chat_id' => $message->chat->id,
                     'text' =>
@@ -163,6 +196,7 @@ class ClanHandler
                         "</code>",
                     'parse_mode' => 'HTML',
                 ]);
+
             } catch (Throwable $sendException) {
 
                 Log::error('ClanHandler error response failed', [
@@ -181,12 +215,15 @@ class ClanHandler
      */
     private function startClanCreation(
         $message,
-        Api $telegram
+        Api $telegram,
+        TelegramUser $telegramUser
     ): void {
+
         $chatId = (int) $message->chat->id;
         $userId = (int) $message->from->id;
 
         if (!$this->isMainChat($chatId)) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -201,6 +238,7 @@ class ClanHandler
          * Пользователь должен быть в главном чате.
          */
         if (!$this->isMainChatMember($telegram, $userId)) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -214,10 +252,14 @@ class ClanHandler
 
         /*
          * Один создатель = один клан.
+         *
+         * Здесь creator_id используется как Telegram ID,
+         * поэтому передаём $userId.
          */
         $existingClan = $clanService->getClanByCreator($userId);
 
         if ($existingClan) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -232,17 +274,25 @@ class ClanHandler
         }
 
         /*
-         * Создаём сессию.
+         * ---------------------------------------------------------
+         * СОЗДАЁМ / ПОЛУЧАЕМ СЕССИЮ
+         *
+         * ВАЖНО:
+         * telegram_user_id = telegram_users.id
+         * ---------------------------------------------------------
          */
         $session = BotSession::query()->firstOrCreate(
             [
-                'telegram_user_id' => $userId,
+                'telegram_user_id' => $telegramUser->id,
             ],
             [
                 'step' => 'clan_name',
             ]
         );
 
+        /*
+         * Начинаем создание клана заново.
+         */
         $session->update([
             'step' => 'clan_name',
             'temp_clan_name' => null,
@@ -271,6 +321,7 @@ class ClanHandler
         Api $telegram,
         BotSession $session
     ): bool {
+
         $chatId = (int) $message->chat->id;
 
         if (!$this->isMainChat($chatId)) {
@@ -280,6 +331,7 @@ class ClanHandler
         $name = trim($message->text ?? '');
 
         if ($name === '') {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -290,6 +342,7 @@ class ClanHandler
         }
 
         if (mb_strlen($name) < 2 || mb_strlen($name) > 100) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -337,6 +390,7 @@ class ClanHandler
         Api $telegram,
         BotSession $session
     ): bool {
+
         $mainChatId = (int) $message->chat->id;
         $userId = (int) $message->from->id;
 
@@ -347,6 +401,7 @@ class ClanHandler
         $chatInput = trim($message->text ?? '');
 
         if ($chatInput === '') {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -358,12 +413,13 @@ class ClanHandler
 
         /*
          * ---------------------------------------------------------
-         * Нормализация
+         * НОРМАЛИЗАЦИЯ
          * ---------------------------------------------------------
          */
         $chatId = $this->normalizeChatId($chatInput);
 
         if ($chatId === null) {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -429,7 +485,7 @@ class ClanHandler
         }
 
         /*
-         * Получаем данные чата.
+         * Данные чата.
          */
         $realChatId = (int) (
             is_object($chat)
@@ -450,6 +506,7 @@ class ClanHandler
             : ($chat['username'] ?? null);
 
         if ($realChatId === 0) {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -463,6 +520,7 @@ class ClanHandler
          * Только группа / супергруппа.
          */
         if (!in_array($chatType, ['group', 'supergroup'], true)) {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -519,6 +577,7 @@ class ClanHandler
          * Только creator.
          */
         if ($memberStatus !== 'creator') {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -542,6 +601,7 @@ class ClanHandler
         );
 
         if ($existingChatClan) {
+
             $telegram->sendMessage([
                 'chat_id' => $mainChatId,
                 'text' =>
@@ -577,10 +637,6 @@ class ClanHandler
                 'error' => $e->getMessage(),
             ]);
 
-            /*
-             * Если Telegram не дал количество,
-             * всё равно продолжаем создание.
-             */
             $memberCount = 0;
         }
 
@@ -591,10 +647,6 @@ class ClanHandler
          */
         try {
 
-            /*
-             * ВАЖНО:
-             * твой ClanService принимает параметры именно так.
-             */
             $clan = $clanService->createClan(
                 creatorId: $userId,
                 creatorUsername: $message->from->username ?? null,
@@ -632,10 +684,6 @@ class ClanHandler
          * ---------------------------------------------------------
          * СОЗДАЁМ INVITE
          * ---------------------------------------------------------
-         *
-         * ВАЖНО:
-         * ClanService принимает Clan $clan,
-         * а не clanId.
          */
         try {
 
@@ -652,8 +700,11 @@ class ClanHandler
                 'error' => $e->getMessage(),
             ]);
 
+            /*
+             * step НЕ должен быть NULL.
+             */
             $session->update([
-                'step' => null,
+                'step' => 'idle',
                 'temp_clan_name' => null,
                 'temp_clan_chat_id' => null,
                 'temp_clan_chat_input' => null,
@@ -678,7 +729,7 @@ class ClanHandler
          * ---------------------------------------------------------
          */
         $session->update([
-            'step' => null,
+            'step' => 'idle',
             'temp_clan_name' => null,
             'temp_clan_chat_id' => null,
             'temp_clan_chat_input' => null,
@@ -726,6 +777,7 @@ class ClanHandler
             "\n";
 
         if ($chatLink) {
+
             $text .=
                 "🔗 <a href=\"" .
                 $this->escapeHtml($chatLink) .
@@ -768,6 +820,7 @@ class ClanHandler
         $message,
         Api $telegram
     ): void {
+
         $chatId = (int) $message->chat->id;
 
         if (!$this->isMainChat($chatId)) {
@@ -779,6 +832,7 @@ class ClanHandler
         $clans = $clanService->getActiveClans();
 
         if ($clans->isEmpty()) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -806,6 +860,7 @@ class ClanHandler
                 $count = (int) $count;
 
                 if ($count !== (int) $clan->member_count) {
+
                     $clan->update([
                         'member_count' => $count,
                         'member_count_updated_at' => now(),
@@ -849,6 +904,7 @@ class ClanHandler
                         ->first();
 
                     if ($creator) {
+
                         $creatorName =
                             $creator->first_name
                             ?: 'Неизвестно';
@@ -873,6 +929,7 @@ class ClanHandler
             $chatLink = $clan->chat_link;
 
             if (!$chatLink && $clan->chat_username) {
+
                 $chatLink =
                     'https://t.me/' .
                     ltrim($clan->chat_username, '@');
@@ -894,6 +951,7 @@ class ClanHandler
                 "\n";
 
             if ($chatLink) {
+
                 $text .=
                     "💬 <a href=\"" .
                     $this->escapeHtml($chatLink) .
@@ -921,16 +979,15 @@ class ClanHandler
         Api $telegram,
         string $token
     ): bool {
+
         $chatId = (int) $message->chat->id;
 
         $clanService = app(ClanService::class);
 
-        /*
-         * У тебя в ClanService именно getValidInvite().
-         */
         $invite = $clanService->getValidInvite($token);
 
         if (!$invite) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -944,6 +1001,7 @@ class ClanHandler
         $clan = $invite->clan;
 
         if (!$clan || !$clan->isActive()) {
+
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -956,6 +1014,7 @@ class ClanHandler
         $chatLink = $clan->chat_link;
 
         if (!$chatLink && $clan->chat_username) {
+
             $chatLink =
                 'https://t.me/' .
                 ltrim($clan->chat_username, '@');
@@ -973,6 +1032,7 @@ class ClanHandler
             "\n";
 
         if ($chatLink) {
+
             $text .=
                 "💬 <a href=\"" .
                 $this->escapeHtml($chatLink) .
@@ -1011,6 +1071,7 @@ class ClanHandler
         $message,
         Api $telegram
     ): bool {
+
         $callback = $message->callback_query;
 
         $data = $callback->data ?? '';
@@ -1030,10 +1091,6 @@ class ClanHandler
 
             $clanService = app(ClanService::class);
 
-            /*
-             * ВАЖНО:
-             * используем существующий метод.
-             */
             $invite = $clanService->getValidInvite($token);
 
             if (!$invite) {
@@ -1079,12 +1136,10 @@ class ClanHandler
             }
 
             /*
-             * -----------------------------------------------------
-             * Проверяем, есть ли пользователь в другом клане.
+             * Проверяем пользователя в другом клане.
              *
-             * В ClanService такого метода нет,
-             * поэтому проверяем напрямую через ClanMember.
-             * -----------------------------------------------------
+             * ClanService работает с Telegram ID,
+             * поэтому здесь оставляем $userId.
              */
             $existingMember = ClanMember::query()
                 ->where('user_id', $userId)
@@ -1139,6 +1194,7 @@ class ClanHandler
             $callbackChatId = 0;
 
             if (isset($callback->message->chat->id)) {
+
                 $callbackChatId =
                     (int) $callback->message->chat->id;
             }
@@ -1150,6 +1206,7 @@ class ClanHandler
             $chatLink = $clan->chat_link;
 
             if (!$chatLink && $clan->chat_username) {
+
                 $chatLink =
                     'https://t.me/' .
                     ltrim($clan->chat_username, '@');
@@ -1167,6 +1224,7 @@ class ClanHandler
                 "\n";
 
             if ($chatLink) {
+
                 $text .=
                     "\n💬 <a href=\"" .
                     $this->escapeHtml($chatLink) .
@@ -1192,12 +1250,14 @@ class ClanHandler
             ]);
 
             try {
+
                 $telegram->answerCallbackQuery([
                     'callback_query_id' => $callback->id,
                     'text' =>
                         '❌ ' . $e->getMessage(),
                     'show_alert' => true,
                 ]);
+
             } catch (Throwable $ignore) {
             }
 
@@ -1224,6 +1284,7 @@ class ClanHandler
         Api $telegram,
         int $userId
     ): bool {
+
         try {
 
             $member = $telegram->getChatMember([
@@ -1277,6 +1338,7 @@ class ClanHandler
     private function normalizeChatId(
         string $input
     ): string|int|null {
+
         $input = trim($input);
 
         if ($input === '') {
@@ -1355,6 +1417,7 @@ class ClanHandler
     private function buildChatLink(
         ?string $username
     ): ?string {
+
         if (!$username) {
             return null;
         }
@@ -1371,6 +1434,7 @@ class ClanHandler
     private function getBotUsername(
         Api $telegram
     ): string {
+
         try {
 
             $me = $telegram->getMe();
@@ -1401,6 +1465,7 @@ class ClanHandler
     private function escapeHtml(
         ?string $value
     ): string {
+
         return htmlspecialchars(
             (string) $value,
             ENT_QUOTES | ENT_SUBSTITUTE,
