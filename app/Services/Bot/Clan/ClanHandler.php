@@ -13,862 +13,660 @@ use Throwable;
 
 class ClanHandler
 {
+    /**
+     * Главный чат, где работает система кланов.
+     */
     private const MAIN_CHAT_ID = -1004344778682;
 
-    private const STEP_CLAN_NAME = 'clan_name';
-    private const STEP_CLAN_CHAT = 'clan_chat';
-
-    /**
-     * Обрабатывает обычные сообщения.
-     */
     public function handle($message, Api $telegram): bool
     {
         try {
             $text = trim($message->text ?? '');
+            $chatId = (int) ($message->chat->id ?? 0);
+            $userId = (int) ($message->from->id ?? 0);
 
-            if ($text === '') {
-                return false;
-            }
-
-            $telegramId = $message->from->id ?? null;
-
-            if (!$telegramId) {
+            if ($chatId === 0 || $userId === 0) {
                 return false;
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | /mclan
-            |--------------------------------------------------------------------------
-            */
+             * ---------------------------------------------------------
+             * CALLBACK QUERY
+             * ---------------------------------------------------------
+             */
+            if (isset($message->callback_query)) {
+                return $this->handleCallback($message, $telegram);
+            }
 
-            if (
-                $text === '/mclan' ||
-                str_starts_with($text, '/mclan@')
-            ) {
-                $this->startClanCreation(
+            /*
+             * ---------------------------------------------------------
+             * DEEP LINK
+             *
+             * /start clan_TOKEN
+             * ---------------------------------------------------------
+             */
+            if (preg_match('/^\/start(?:@\w+)?\s+clan_([A-Za-z0-9]+)$/i', $text, $matches)) {
+                return $this->showClanInvite(
                     $message,
-                    $telegram
+                    $telegram,
+                    $matches[1]
                 );
+            }
+
+            /*
+             * ---------------------------------------------------------
+             * /mclan
+             * ---------------------------------------------------------
+             */
+            if (preg_match('/^\/mclan(?:@\w+)?$/i', $text)) {
+                $this->startClanCreation($message, $telegram);
 
                 return true;
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | /ms
-            |--------------------------------------------------------------------------
-            */
+             * ---------------------------------------------------------
+             * /ms
+             * ---------------------------------------------------------
+             */
+            if (preg_match('/^\/ms(?:@\w+)?$/i', $text)) {
+                if (!$this->isMainChat($chatId)) {
+                    return false;
+                }
 
-            if (
-                $text === '/ms' ||
-                str_starts_with($text, '/ms@')
-            ) {
-                $this->showClans(
-                    $message,
-                    $telegram
-                );
+                $this->showClans($message, $telegram);
 
                 return true;
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | /mt
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $text === '/mt' ||
-                str_starts_with($text, '/mt ') ||
-                str_starts_with($text, '/mt@')
-            ) {
+             * ---------------------------------------------------------
+             * /mt
+             *
+             * Передаём отдельному обработчику модерации.
+             * ---------------------------------------------------------
+             */
+            if (preg_match('/^\/mt(?:@\w+)?(?:\s+.*)?$/i', $text)) {
                 return false;
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | /mr
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $text === '/mr' ||
-                str_starts_with($text, '/mr ') ||
-                str_starts_with($text, '/mr@')
-            ) {
+             * ---------------------------------------------------------
+             * /mr
+             *
+             * Передаём отдельному обработчику модерации.
+             * ---------------------------------------------------------
+             */
+            if (preg_match('/^\/mr(?:@\w+)?(?:\s+.*)?$/i', $text)) {
                 return false;
             }
 
             /*
-            |--------------------------------------------------------------------------
-            | Состояние создания клана
-            |--------------------------------------------------------------------------
-            */
-
-            $telegramUser = TelegramUser::query()
-                ->where('telegram_id', $telegramId)
-                ->first();
-
-            if (!$telegramUser) {
-                return false;
-            }
-
-            $session = BotSession::query()
-                ->where('telegram_user_id', $telegramUser->id)
-                ->first();
+             * ---------------------------------------------------------
+             * ПРОДОЛЖЕНИЕ СОЗДАНИЯ КЛАНА
+             * ---------------------------------------------------------
+             */
+            $session = BotSession::where(
+                'telegram_user_id',
+                $userId
+            )->first();
 
             if (!$session) {
                 return false;
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Название клана
-            |--------------------------------------------------------------------------
-            */
-
-            if ($session->step === self::STEP_CLAN_NAME) {
-                $this->handleClanName(
+            if ($session->step === 'clan_name') {
+                return $this->handleClanName(
                     $message,
                     $telegram,
-                    $telegramUser,
-                    $session,
-                    $text
+                    $session
                 );
-
-                return true;
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Telegram-чат клана
-            |--------------------------------------------------------------------------
-            */
-
-            if ($session->step === self::STEP_CLAN_CHAT) {
-                $this->handleClanChat(
+            if ($session->step === 'clan_chat') {
+                return $this->handleClanChat(
                     $message,
                     $telegram,
-                    $telegramUser,
-                    $session,
-                    $text
+                    $session
                 );
-
-                return true;
             }
 
             return false;
 
         } catch (Throwable $e) {
-            Log::error(
-                'Clan handler error',
-                [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                ]
-            );
+
+            Log::error('ClanHandler error', [
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+                'trace' => $e->getTraceAsString(),
+            ]);
 
             try {
                 $telegram->sendMessage([
-                    'chat_id' => $message->chat->id ?? null,
+                    'chat_id' => $message->chat->id,
                     'text' => '❌ Произошла ошибка при обработке команды.',
                 ]);
             } catch (Throwable $sendException) {
-                Log::error(
-                    'Clan error message failed',
-                    [
-                        'message' => $sendException->getMessage(),
-                    ]
-                );
-            }
-
-            return true;
-        }
-    }
-
-    /**
-     * Deep-link:
-     * /start clan_TOKEN
-     */
-    public function handleDeepLink($message, Api $telegram): bool
-    {
-        try {
-            $text = trim($message->text ?? '');
-
-            if (!str_starts_with($text, '/start clan_')) {
-                return false;
-            }
-
-            $token = trim(
-                substr(
-                    $text,
-                    strlen('/start clan_')
-                )
-            );
-
-            if ($token === '') {
-                return false;
-            }
-
-            $invite = app(ClanService::class)
-                ->getValidInvite($token);
-
-            if (!$invite) {
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-                    'text' =>
-                        "❌ Приглашение недействительно.\n\n" .
-                        "Оно могло быть удалено, отключено или срок его действия истёк.",
+                Log::error('ClanHandler error message failed', [
+                    'error' => $sendException->getMessage(),
                 ]);
-
-                return true;
             }
-
-            $clan = $invite->clan;
-
-            if (!$clan || !$clan->isActive()) {
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-                    'text' => '❌ Этот клан больше недоступен.',
-                ]);
-
-                return true;
-            }
-
-            $telegramId = $message->from->id ?? null;
-
-            if (!$telegramId) {
-                return true;
-            }
-
-            $telegramUser = TelegramUser::query()
-                ->where('telegram_id', $telegramId)
-                ->first();
-
-            if (!$telegramUser) {
-                $from = $message->from;
-
-                $telegramUser = TelegramUser::query()->updateOrCreate(
-                    [
-                        'telegram_id' => $telegramId,
-                    ],
-                    [
-                        'username' => $from->username ?? null,
-                        'first_name' => $from->first_name ?? null,
-                        'last_name' => $from->last_name ?? null,
-                    ]
-                );
-            }
-
-            $memberCount = $clan->members()
-                ->where('status', 'active')
-                ->count();
-
-            $creator = $clan->creator_username
-                ? '@' . ltrim($clan->creator_username, '@')
-                : 'не указан';
-
-            $chatText = 'не указан';
-
-            if ($clan->chat_link) {
-                $chatText = $clan->chat_link;
-            } elseif ($clan->chat_username) {
-                $chatText =
-                    'https://t.me/' .
-                    ltrim($clan->chat_username, '@');
-            }
-
-            $text =
-                "⚔️ <b>Приглашение в клан</b>\n\n" .
-                "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n\n" .
-                "👑 Глава: {$this->escapeHtml($creator)}\n" .
-                "⚔️ В клане: {$memberCount}\n" .
-                "👥 В чате: {$clan->member_count}\n\n";
-
-            if ($chatText !== 'не указан') {
-                $text .=
-                    "💬 Чат клана:\n" .
-                    "<a href=\"" .
-                    $this->escapeHtml($chatText) .
-                    "\">Открыть чат</a>\n\n";
-            }
-
-            $text .=
-                "Чтобы вступить в клан, нажмите кнопку ниже.";
-
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' => $text,
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-                'reply_markup' => json_encode([
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' => '⚔️ Вступить',
-                                'callback_data' =>
-                                    'clan_join_' . $invite->token,
-                            ],
-                        ],
-                    ],
-                ]),
-            ]);
-
-            return true;
-
-        } catch (Throwable $e) {
-            Log::error(
-                'Clan deep link error',
-                [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                ]
-            );
 
             return true;
         }
     }
 
     /**
-     * Callback клана.
+     * ================================================================
+     * /mclan
+     * ================================================================
      */
-    public function handleCallback($callback, Api $telegram): bool
+    private function startClanCreation($message, Api $telegram): void
     {
-        try {
-            $callbackData = $callback->data ?? '';
+        $chatId = (int) $message->chat->id;
+        $userId = (int) $message->from->id;
 
-            if (!str_starts_with($callbackData, 'clan_')) {
-                return false;
-            }
-
-            if (str_starts_with($callbackData, 'clan_join_')) {
-                $token = substr(
-                    $callbackData,
-                    strlen('clan_join_')
-                );
-
-                $this->joinByInvite(
-                    $callback,
-                    $telegram,
-                    $token
-                );
-
-                try {
-                    $telegram->answerCallbackQuery([
-                        'callback_query_id' => $callback->id,
-                    ]);
-                } catch (Throwable $e) {
-                    // Игнорируем.
-                }
-
-                return true;
-            }
-
-            return false;
-
-        } catch (Throwable $e) {
-            Log::error(
-                'Clan callback error',
-                [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                ]
-            );
-
-            return true;
-        }
-    }
-
-    /**
-     * Начало создания клана.
-     */
-    private function startClanCreation(
-        $message,
-        Api $telegram
-    ): void {
-        $telegramId = $message->from->id ?? null;
-
-        if (!$telegramId) {
-            return;
-        }
-
-        if (!$this->isMainChatMember(
-            $telegram,
-            $telegramId
-        )) {
+        /*
+         * Создание клана только из главного чата.
+         */
+        if (!$this->isMainChat($chatId)) {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $chatId,
                 'text' =>
-                    "❌ <b>Регистрация клана недоступна.</b>\n\n" .
-                    "Чтобы создать клан, вы должны состоять в главном чате проекта.",
+                    "❌ <b>Создание клана доступно только в главном чате.</b>",
                 'parse_mode' => 'HTML',
             ]);
 
             return;
         }
 
-        $telegramUser = TelegramUser::query()
-            ->where('telegram_id', $telegramId)
-            ->first();
+        /*
+         * Проверяем, состоит ли пользователь в главном чате.
+         */
+        if (!$this->isMainChatMember($telegram, $userId)) {
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' =>
+                    "❌ Вы должны состоять в главном чате.",
+                'parse_mode' => 'HTML',
+            ]);
 
-        if (!$telegramUser) {
-            $from = $message->from;
-
-            $telegramUser = TelegramUser::query()->updateOrCreate(
-                [
-                    'telegram_id' => $telegramId,
-                ],
-                [
-                    'username' => $from->username ?? null,
-                    'first_name' => $from->first_name ?? null,
-                    'last_name' => $from->last_name ?? null,
-                ]
-            );
+            return;
         }
 
-        $service = app(ClanService::class);
+        $clanService = app(ClanService::class);
 
-        $existingClan = $service->getClanByCreator(
-            $telegramUser->id
-        );
+        /*
+         * У одного Telegram-пользователя может быть только один клан.
+         */
+        $existingClan = $clanService->getClanByCreator($userId);
 
         if ($existingClan) {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $chatId,
                 'text' =>
-                    "❌ Вы уже зарегистрировали клан:\n\n" .
-                    "🏰 <b>{$this->escapeHtml($existingClan->name)}</b>\n\n" .
-                    "Один пользователь может создать только один клан.",
+                    "❌ <b>У вас уже есть клан.</b>\n\n" .
+                    "🏰 <b>{$this->escapeHtml($existingClan->name)}</b>",
                 'parse_mode' => 'HTML',
             ]);
 
             return;
         }
 
-        BotSession::query()
-            ->where('telegram_user_id', $telegramUser->id)
-            ->delete();
+        /*
+         * Создаём/очищаем сессию.
+         */
+        $session = BotSession::firstOrCreate(
+            [
+                'telegram_user_id' => $userId,
+            ],
+            [
+                'step' => null,
+            ]
+        );
 
-        BotSession::query()->create([
-            'telegram_user_id' => $telegramUser->id,
-            'step' => self::STEP_CLAN_NAME,
+        $session->update([
+            'step' => 'clan_name',
+            'temp_clan_name' => null,
+            'temp_clan_chat_id' => null,
+            'temp_clan_chat_input' => null,
         ]);
 
         $telegram->sendMessage([
-            'chat_id' => $message->chat->id,
+            'chat_id' => $chatId,
             'text' =>
                 "🏰 <b>Создание клана</b>\n\n" .
-                "Шаг 1 из 2\n\n" .
-                "Введите <b>название вашего клана</b>.\n\n" .
-                "Максимум: 100 символов.",
+                "Введите <b>название клана</b>.\n\n" .
+                "Например:\n" .
+                "<code>Shoh King</code>",
             'parse_mode' => 'HTML',
         ]);
     }
 
     /**
-     * Название клана.
+     * ================================================================
+     * НАЗВАНИЕ КЛАНА
+     * ================================================================
      */
     private function handleClanName(
         $message,
         Api $telegram,
-        TelegramUser $telegramUser,
-        BotSession $session,
-        string $text
-    ): void {
-        if (
-            $text === '❌ Отмена' ||
-            $text === '/cancel'
-        ) {
-            $session->delete();
+        BotSession $session
+    ): bool {
+        $chatId = (int) $message->chat->id;
 
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' => '❌ Создание клана отменено.',
-            ]);
-
-            return;
+        if (!$this->isMainChat($chatId)) {
+            return false;
         }
 
-        if (str_starts_with($text, '/')) {
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Сейчас необходимо ввести название клана.\n\n" .
-                    "Для отмены используйте /cancel.",
-            ]);
-
-            return;
-        }
-
-        $name = trim($text);
+        $name = trim($message->text ?? '');
 
         if ($name === '') {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $chatId,
                 'text' => '❌ Название клана не может быть пустым.',
             ]);
 
-            return;
+            return true;
         }
 
-        if (mb_strlen($name) > 100) {
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 100) {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $chatId,
                 'text' =>
-                    "❌ Название слишком длинное.\n\n" .
-                    "Максимум — 100 символов.",
+                    "❌ Название должно содержать от 2 до 100 символов.",
             ]);
 
-            return;
+            return true;
         }
 
         $session->update([
-            'step' => self::STEP_CLAN_CHAT,
+            'step' => 'clan_chat',
             'temp_clan_name' => $name,
         ]);
 
         $telegram->sendMessage([
-            'chat_id' => $message->chat->id,
+            'chat_id' => $chatId,
             'text' =>
-                "🏰 Название клана: <b>{$this->escapeHtml($name)}</b>\n\n" .
-                "Шаг 2 из 2\n\n" .
+                "🏰 <b>Название:</b> " .
+                $this->escapeHtml($name) .
+                "\n\n" .
                 "Теперь отправьте <b>Telegram-чат клана</b>.\n\n" .
                 "Можно отправить:\n" .
                 "• <code>@username</code>\n" .
-                "• <code>-1001234567890</code>\n" .
-                "• ссылку <code>https://t.me/username</code>\n\n" .
-                "⚠️ Вы должны быть <b>владельцем</b> этого Telegram-чата.",
+                "• <code>https://t.me/username</code>\n" .
+                "• <code>t.me/username</code>\n" .
+                "• ID вида <code>-1001234567890</code>\n\n" .
+                "⚠️ Бот должен находиться в этом чате, а вы должны быть его владельцем.",
             'parse_mode' => 'HTML',
         ]);
+
+        return true;
     }
 
     /**
-     * Регистрация Telegram-чата клана.
+     * ================================================================
+     * TELEGRAM-ЧАТ КЛАНА
+     * ================================================================
      */
     private function handleClanChat(
         $message,
         Api $telegram,
-        TelegramUser $telegramUser,
-        BotSession $session,
-        string $text
-    ): void {
-        if (
-            $text === '❌ Отмена' ||
-            $text === '/cancel'
-        ) {
-            $session->delete();
+        BotSession $session
+    ): bool {
+        $mainChatId = (int) $message->chat->id;
+        $userId = (int) $message->from->id;
 
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' => '❌ Создание клана отменено.',
-            ]);
-
-            return;
+        if (!$this->isMainChat($mainChatId)) {
+            return false;
         }
 
-        if (str_starts_with($text, '/')) {
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Сейчас необходимо указать Telegram-чат клана.\n\n" .
-                    "Для отмены используйте /cancel.",
-            ]);
-
-            return;
-        }
-
-        $chatInput = trim($text);
+        $chatInput = trim($message->text ?? '');
 
         if ($chatInput === '') {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' => '❌ Telegram-чат не указан.',
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "❌ Отправьте username, ссылку на Telegram-чат или его ID.",
             ]);
 
-            return;
+            return true;
         }
 
+        /*
+         * ---------------------------------------------------------
+         * Нормализуем введённый чат.
+         * ---------------------------------------------------------
+         */
         $chatId = $this->normalizeChatId($chatInput);
 
         if ($chatId === null) {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $mainChatId,
                 'text' =>
-                    "❌ Не удалось распознать Telegram-чат.\n\n" .
-                    "Отправьте @username, ссылку t.me/... или ID вида -1001234567890.",
+                    "❌ <b>Не удалось распознать Telegram-чат.</b>\n\n" .
+                    "Отправьте:\n" .
+                    "• <code>@username</code>\n" .
+                    "• <code>https://t.me/username</code>\n" .
+                    "• <code>t.me/username</code>\n" .
+                    "• ID вида <code>-1001234567890</code>",
+                'parse_mode' => 'HTML',
             ]);
 
-            return;
+            return true;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Получаем информацию о чате
-        |--------------------------------------------------------------------------
-        */
+         * Сохраняем исходный ввод.
+         */
+        $session->update([
+            'temp_clan_chat_input' => $chatInput,
+        ]);
 
+        /*
+         * ---------------------------------------------------------
+         * Получаем информацию о Telegram-чате.
+         * ---------------------------------------------------------
+         */
         try {
             $chat = $telegram->getChat([
                 'chat_id' => $chatId,
             ]);
-        } catch (Throwable $e) {
-            Log::warning(
-                'Clan chat lookup failed',
-                [
-                    'chat' => $chatInput,
-                    'message' => $e->getMessage(),
-                ]
-            );
-
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Не удалось найти этот Telegram-чат.\n\n" .
-                    "Убедитесь, что:\n" .
-                    "• чат существует;\n" .
-                    "• бот добавлен в этот чат;\n" .
-                    "• ID или username указан правильно.",
-            ]);
-
-            return;
-        }
-
-        $realChatId = (int) ($chat->id ?? 0);
-
-        if ($realChatId === 0) {
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' => '❌ Telegram не вернул ID чата.',
-            ]);
-
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Тип чата
-        |--------------------------------------------------------------------------
-        */
-
-        $chatType = $chat->type ?? null;
-
-        if (!in_array(
-            $chatType,
-            ['group', 'supergroup'],
-            true
-        )) {
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Для клана можно зарегистрировать только группу или супергруппу Telegram.",
-            ]);
-
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем OWNER
-        |--------------------------------------------------------------------------
-        */
-
-        try {
-            $member = $telegram->getChatMember([
-                'chat_id' => $realChatId,
-                'user_id' => $telegramUser->telegram_id,
-            ]);
-
-            $status = $member->status ?? null;
 
         } catch (Throwable $e) {
-            Log::warning(
-                'Clan owner check failed',
-                [
-                    'chat_id' => $realChatId,
-                    'user_id' => $telegramUser->telegram_id,
-                    'message' => $e->getMessage(),
-                    'exception' => get_class($e),
-                ]
-            );
 
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Не удалось проверить ваши права в этом Telegram-чате.\n\n" .
-                    "Убедитесь, что бот находится в чате.",
+            Log::error('Clan chat lookup failed', [
+                'input' => $chatInput,
+                'normalized_chat_id' => $chatId,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
             ]);
 
-            return;
-        }
-
-        if ($status !== 'creator') {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $mainChatId,
                 'text' =>
-                    "❌ Вы не являетесь <b>владельцем</b> этого Telegram-чата.\n\n" .
-                    "Ваш текущий статус: <code>" .
-                    $this->escapeHtml((string) $status) .
+                    "❌ <b>Telegram не смог найти этот чат.</b>\n\n" .
+                    "📌 Вы указали:\n" .
+                    "<code>" .
+                    $this->escapeHtml($chatInput) .
+                    "</code>\n\n" .
+                    "🔎 Telegram получил:\n" .
+                    "<code>" .
+                    $this->escapeHtml((string) $chatId) .
+                    "</code>\n\n" .
+                    "⚠️ Ошибка Telegram:\n" .
+                    "<code>" .
+                    $this->escapeHtml($e->getMessage()) .
                     "</code>",
                 'parse_mode' => 'HTML',
             ]);
 
-            return;
+            return true;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Проверяем, не зарегистрирован ли чат
-        |--------------------------------------------------------------------------
-        */
-
-        $service = app(ClanService::class);
-
-        $existingClan = $service->getClanByChatId(
-            $realChatId
+         * Telegram SDK может вернуть объект или массив.
+         */
+        $realChatId = (int) (
+            is_object($chat)
+                ? ($chat->id ?? 0)
+                : ($chat['id'] ?? 0)
         );
 
-        if ($existingClan) {
+        $chatType = is_object($chat)
+            ? ($chat->type ?? null)
+            : ($chat['type'] ?? null);
+
+        $chatTitle = is_object($chat)
+            ? ($chat->title ?? null)
+            : ($chat['title'] ?? null);
+
+        $chatUsername = is_object($chat)
+            ? ($chat->username ?? null)
+            : ($chat['username'] ?? null);
+
+        if ($realChatId === 0) {
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $mainChatId,
                 'text' =>
-                    "❌ Этот Telegram-чат уже зарегистрирован.\n\n" .
-                    "🏰 Клан: <b>{$this->escapeHtml($existingClan->name)}</b>",
+                    "❌ Telegram вернул некорректные данные о чате.",
+            ]);
+
+            return true;
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Проверяем тип чата.
+         *
+         * Клан может быть только group/supergroup.
+         * ---------------------------------------------------------
+         */
+        if (!in_array($chatType, ['group', 'supergroup'], true)) {
+            $telegram->sendMessage([
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "❌ <b>Это не групповой чат.</b>\n\n" .
+                    "Тип найденного чата: " .
+                    "<code>" .
+                    $this->escapeHtml((string) $chatType) .
+                    "</code>\n\n" .
+                    "Клан можно создать только в группе или супергруппе.",
                 'parse_mode' => 'HTML',
             ]);
 
-            return;
+            return true;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Получаем количество участников
-        |--------------------------------------------------------------------------
-        |
-        | Если Telegram не отдаёт количество, создание клана НЕ прерываем.
-        | Подробная ошибка попадает в laravel.log.
-        |--------------------------------------------------------------------------
-        */
+         * ---------------------------------------------------------
+         * Проверяем, что пользователь является OWNER.
+         * ---------------------------------------------------------
+         */
+        try {
+            $member = $telegram->getChatMember([
+                'chat_id' => $realChatId,
+                'user_id' => $userId,
+            ]);
 
+        } catch (Throwable $e) {
+
+            Log::error('Clan owner check failed', [
+                'chat_id' => $realChatId,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            $telegram->sendMessage([
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "❌ <b>Не удалось проверить владельца чата.</b>\n\n" .
+                    "Убедитесь, что бот находится в этом чате.\n\n" .
+                    "⚠️ Ошибка Telegram:\n" .
+                    "<code>" .
+                    $this->escapeHtml($e->getMessage()) .
+                    "</code>",
+                'parse_mode' => 'HTML',
+            ]);
+
+            return true;
+        }
+
+        $memberStatus = is_object($member)
+            ? ($member->status ?? null)
+            : ($member['status'] ?? null);
+
+        if ($memberStatus !== 'creator') {
+            $telegram->sendMessage([
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "❌ <b>Вы не являетесь владельцем этого чата.</b>\n\n" .
+                    "Создать клан может только настоящий владелец Telegram-чата.",
+                'parse_mode' => 'HTML',
+            ]);
+
+            return true;
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Проверяем, не зарегистрирован ли уже этот чат.
+         * ---------------------------------------------------------
+         */
+        $clanService = app(ClanService::class);
+
+        $existingChatClan = $clanService->getClanByChatId(
+            $realChatId
+        );
+
+        if ($existingChatClan) {
+            $telegram->sendMessage([
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "❌ <b>Этот чат уже зарегистрирован.</b>\n\n" .
+                    "🏰 Клан: " .
+                    "<b>" .
+                    $this->escapeHtml($existingChatClan->name) .
+                    "</b>",
+                'parse_mode' => 'HTML',
+            ]);
+
+            return true;
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Получаем количество участников.
+         *
+         * Если Telegram не отдаст count, НЕ ломаем создание клана.
+         * ---------------------------------------------------------
+         */
         $memberCount = 0;
 
         try {
-            $countResponse = $telegram->getChatMembersCount([
+            $count = $telegram->getChatMembersCount([
                 'chat_id' => $realChatId,
             ]);
 
-            $memberCount = (int) $countResponse;
+            $memberCount = (int) $count;
 
         } catch (Throwable $e) {
-            Log::warning(
-                'Failed to get clan chat member count during creation',
-                [
-                    'chat_id' => $realChatId,
-                    'chat_type' => $chatType,
-                    'chat_username' => $chat->username ?? null,
-                    'chat_title' => $chat->title ?? null,
-                    'error' => $e->getMessage(),
-                    'exception' => get_class($e),
-                ]
-            );
 
+            Log::warning('Clan member count failed', [
+                'chat_id' => $realChatId,
+                'chat_username' => $chatUsername,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            /*
+             * Не останавливаем регистрацию.
+             */
             $memberCount = 0;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Данные чата
-        |--------------------------------------------------------------------------
-        */
-
-        $chatUsername = $chat->username ?? null;
-
-        $chatLink = $chatUsername
-            ? 'https://t.me/' . ltrim($chatUsername, '@')
-            : null;
-
-        $clanName = $session->temp_clan_name;
-
-        if (!$clanName) {
-            $session->delete();
-
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ Сессия создания клана повреждена.\n\n" .
-                    "Начните регистрацию заново через /mclan.",
-            ]);
-
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Создаём клан
-        |--------------------------------------------------------------------------
-        */
-
+         * ---------------------------------------------------------
+         * Создаём клан.
+         * ---------------------------------------------------------
+         */
         try {
-            $clan = $service->createClan(
-                creatorId: $telegramUser->id,
-                creatorUsername: $telegramUser->username,
-                name: $clanName,
+
+            $clan = $clanService->createClan(
+                creatorId: $userId,
+                name: $session->temp_clan_name,
                 chatId: $realChatId,
+                creatorUsername: $message->from->username ?? null,
                 chatUsername: $chatUsername,
-                chatLink: $chatLink,
-                memberCount: $memberCount,
+                chatLink: $this->buildChatLink(
+                    $chatUsername,
+                    $realChatId
+                ),
+                memberCount: $memberCount
             );
 
-        } catch (RuntimeException $e) {
+        } catch (Throwable $e) {
+
+            Log::error('Clan creation failed', [
+                'user_id' => $userId,
+                'chat_id' => $realChatId,
+                'name' => $session->temp_clan_name,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
             $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
+                'chat_id' => $mainChatId,
                 'text' =>
-                    "❌ " .
-                    $this->escapeHtml($e->getMessage()),
+                    "❌ <b>Не удалось создать клан.</b>\n\n" .
+                    "⚠️ Ошибка:\n" .
+                    "<code>" .
+                    $this->escapeHtml($e->getMessage()) .
+                    "</code>",
                 'parse_mode' => 'HTML',
             ]);
 
-            return;
+            return true;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Создаём приглашение
-        |--------------------------------------------------------------------------
-        */
-
-        $invite = $service->createInvite(
-            clan: $clan,
-            createdBy: $telegramUser->id,
-        );
-
-        $session->delete();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Username бота
-        |--------------------------------------------------------------------------
-        */
-
-        $botUsername = 'YkSUS10_bot';
-
+         * ---------------------------------------------------------
+         * Создаём invite.
+         * ---------------------------------------------------------
+         */
         try {
-            $me = $telegram->getMe();
 
-            if (!empty($me->username)) {
-                $botUsername = $me->username;
-            }
-        } catch (Throwable $e) {
-            Log::warning(
-                'Could not get bot username',
-                [
-                    'message' => $e->getMessage(),
-                ]
+            $invite = $clanService->createInvite(
+                clanId: $clan->id,
+                createdBy: $userId
             );
+
+        } catch (Throwable $e) {
+
+            Log::error('Clan invite creation failed', [
+                'clan_id' => $clan->id,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            $session->update([
+                'step' => null,
+                'temp_clan_name' => null,
+                'temp_clan_chat_id' => null,
+                'temp_clan_chat_input' => null,
+            ]);
+
+            $telegram->sendMessage([
+                'chat_id' => $mainChatId,
+                'text' =>
+                    "⚠️ Клан создан, но не удалось создать приглашение.\n\n" .
+                    "ID клана: <code>{$clan->id}</code>",
+                'parse_mode' => 'HTML',
+            ]);
+
+            return true;
         }
+
+        /*
+         * ---------------------------------------------------------
+         * Очищаем сессию.
+         * ---------------------------------------------------------
+         */
+        $session->update([
+            'step' => null,
+            'temp_clan_name' => null,
+            'temp_clan_chat_id' => null,
+            'temp_clan_chat_input' => null,
+        ]);
+
+        /*
+         * ---------------------------------------------------------
+         * Ссылка на приглашение.
+         * ---------------------------------------------------------
+         */
+        $botUsername = $this->getBotUsername($telegram);
 
         $inviteLink =
             'https://t.me/' .
@@ -876,30 +674,47 @@ class ClanHandler
             '?start=clan_' .
             $invite->token;
 
-        $chatName = $chat->title
-            ?? (
-                $chatUsername
-                    ? '@' . ltrim($chatUsername, '@')
-                    : (string) $realChatId
-            );
+        $chatLink = $this->buildChatLink(
+            $chatUsername,
+            $realChatId
+        );
+
+        $chatTitleText = $chatTitle
+            ?: ($chatUsername ? '@' . $chatUsername : (string) $realChatId);
 
         /*
-        |--------------------------------------------------------------------------
-        | Успешное создание
-        |--------------------------------------------------------------------------
-        */
+         * ---------------------------------------------------------
+         * Успешное сообщение.
+         * ---------------------------------------------------------
+         */
+        $text =
+            "🎉 <b>Клан успешно создан!</b>\n\n" .
+
+            "🏰 <b>Клан:</b> " .
+            $this->escapeHtml($clan->name) .
+            "\n" .
+
+            "💬 <b>Чат:</b> " .
+            $this->escapeHtml($chatTitleText) .
+            "\n";
+
+        if ($chatLink) {
+            $text .=
+                "🔗 <a href=\"" .
+                $this->escapeHtml($chatLink) .
+                "\">Открыть чат</a>\n";
+        }
+
+        $text .=
+            "\n" .
+            "👥 <b>Участников:</b> " .
+            $memberCount .
+            "\n\n" .
+            "📨 Теперь отправляйте приглашение другим игрокам.";
 
         $telegram->sendMessage([
-            'chat_id' => $message->chat->id,
-            'text' =>
-                "🎉 <b>Клан успешно зарегистрирован!</b>\n\n" .
-                "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n" .
-                "💬 Чат: <b>{$this->escapeHtml($chatName)}</b>\n" .
-                "👥 В чате: <b>{$memberCount}</b>\n" .
-                "⚔️ В клане: <b>1</b>\n\n" .
-                "👑 Вы являетесь главой клана.\n\n" .
-                "🔗 <b>Ссылка-приглашение</b>\n" .
-                "Нажмите кнопку ниже, чтобы открыть приглашение.",
+            'chat_id' => $mainChatId,
+            'text' => $text,
             'parse_mode' => 'HTML',
             'reply_markup' => json_encode([
                 'inline_keyboard' => [
@@ -912,145 +727,140 @@ class ClanHandler
                 ],
             ]),
         ]);
+
+        return true;
     }
 
     /**
-     * Список кланов.
-     *
-     * Каждый вызов /ms пытается заново получить
-     * количество участников Telegram-чата.
+     * ================================================================
+     * /ms
+     * ================================================================
      */
-    private function showClans(
-        $message,
-        Api $telegram
-    ): void {
-        $chatId = (int) ($message->chat->id ?? 0);
+    private function showClans($message, Api $telegram): void
+    {
+        $chatId = (int) $message->chat->id;
 
-        if ($chatId !== self::MAIN_CHAT_ID) {
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' =>
-                    "❌ Команда <code>/ms</code> доступна только в главном чате.",
-                'parse_mode' => 'HTML',
-            ]);
-
+        if (!$this->isMainChat($chatId)) {
             return;
         }
 
-        $clans = Clan::query()
-            ->where('status', 'active')
-            ->get();
+        $clanService = app(ClanService::class);
+
+        $clans = $clanService->getActiveClans();
 
         if ($clans->isEmpty()) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
                     "🏰 <b>Кланы</b>\n\n" .
-                    "Пока зарегистрированных кланов нет.",
+                    "Пока нет зарегистрированных кланов.",
                 'parse_mode' => 'HTML',
             ]);
 
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Обновляем количество участников
-        |--------------------------------------------------------------------------
-        */
+        $text =
+            "🏰 <b>Кланы</b>\n\n";
 
-        foreach ($clans as $clan) {
+        foreach ($clans as $index => $clan) {
+
+            /*
+             * Пытаемся обновить количество участников.
+             */
             try {
-                $countResponse = $telegram->getChatMembersCount([
+
+                $count = $telegram->getChatMembersCount([
                     'chat_id' => $clan->chat_id,
                 ]);
 
-                $memberCount = (int) $countResponse;
+                $count = (int) $count;
 
-                $clan->update([
-                    'member_count' => $memberCount,
-                    'member_count_updated_at' => now(),
-                ]);
+                if ($count !== (int) $clan->member_count) {
+                    $clan->update([
+                        'member_count' => $count,
+                        'member_count_updated_at' => now(),
+                    ]);
 
-                $clan->member_count = $memberCount;
+                    $clan->refresh();
+                }
 
             } catch (Throwable $e) {
-                Log::error(
-                    'Failed to update clan member count',
-                    [
-                        'clan_id' => $clan->id,
-                        'clan_name' => $clan->name,
-                        'chat_id' => $clan->chat_id,
-                        'error' => $e->getMessage(),
-                        'exception' => get_class($e),
-                    ]
-                );
+
+                Log::warning('Clan /ms member count update failed', [
+                    'clan_id' => $clan->id,
+                    'chat_id' => $clan->chat_id,
+                    'error' => $e->getMessage(),
+                ]);
             }
-        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Сортировка
-        |--------------------------------------------------------------------------
-        */
+            $creatorName = null;
 
-        $clans = $clans
-            ->sortBy([
-                ['member_count', 'desc'],
-                ['name', 'asc'],
-            ])
-            ->values();
+            if ($clan->creator_username) {
+                $creatorName = '@' . ltrim(
+                    $clan->creator_username,
+                    '@'
+                );
+            } else {
+                try {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Формируем сообщение
-        |--------------------------------------------------------------------------
-        */
+                    $creator = TelegramUser::where(
+                        'telegram_id',
+                        $clan->creator_id
+                    )->first();
 
-        $text =
-            "🏰 <b>Зарегистрированные кланы</b>\n\n";
+                    if ($creator) {
+                        $creatorName =
+                            $creator->first_name
+                            ?: 'Неизвестно';
+                    }
 
-        $number = 1;
+                } catch (Throwable $e) {
 
-        foreach ($clans as $clan) {
+                    Log::warning('Clan creator lookup failed', [
+                        'clan_id' => $clan->id,
+                        'creator_id' => $clan->creator_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
 
-            $clanMembers = $clan->members()
-                ->where('status', 'active')
-                ->count();
+            if (!$creatorName) {
+                $creatorName = 'Неизвестно';
+            }
 
-            $creator = $clan->creator_username
-                ? '@' . ltrim($clan->creator_username, '@')
-                : 'не указан';
+            $chatLink = $clan->chat_link;
 
-            $text .=
-                "<b>{$number}. {$this->escapeHtml($clan->name)}</b>\n" .
-                "👑 Глава: {$this->escapeHtml($creator)}\n" .
-                "👥 В чате: <b>{$clan->member_count}</b>\n" .
-                "⚔️ В клане: <b>{$clanMembers}</b>\n";
-
-            if ($clan->chat_link) {
-                $text .=
-                    "💬 <a href=\"" .
-                    $this->escapeHtml($clan->chat_link) .
-                    "\">Чат клана</a>\n";
-            } elseif ($clan->chat_username) {
-                $link =
+            if (!$chatLink && $clan->chat_username) {
+                $chatLink =
                     'https://t.me/' .
                     ltrim($clan->chat_username, '@');
+            }
 
+            $text .=
+                "<b>" .
+                ($index + 1) .
+                ". " .
+                $this->escapeHtml($clan->name) .
+                "</b>\n" .
+
+                "👑 Создатель: " .
+                $this->escapeHtml($creatorName) .
+                "\n" .
+
+                "👥 Участников: " .
+                (int) $clan->member_count .
+                "\n";
+
+            if ($chatLink) {
                 $text .=
                     "💬 <a href=\"" .
-                    $this->escapeHtml($link) .
+                    $this->escapeHtml($chatLink) .
                     "\">Чат клана</a>\n";
             }
 
             $text .= "\n";
-
-            $number++;
         }
-
-        $text .=
-            "📊 Всего кланов: <b>{$clans->count()}</b>";
 
         $telegram->sendMessage([
             'chat_id' => $chatId,
@@ -1061,202 +871,324 @@ class ClanHandler
     }
 
     /**
-     * Вступление по приглашению.
+     * ================================================================
+     * DEEP LINK
+     *
+     * /start clan_TOKEN
+     * ================================================================
      */
-    private function joinByInvite(
-        $callback,
+    private function showClanInvite(
+        $message,
         Api $telegram,
         string $token
-    ): void {
-        $telegramId = $callback->from->id ?? null;
+    ): bool {
+        $chatId = (int) $message->chat->id;
 
-        if (!$telegramId) {
-            return;
-        }
+        $clanService = app(ClanService::class);
 
-        $invite = app(ClanService::class)
-            ->getValidInvite($token);
+        $invite = $clanService->getInviteByToken($token);
 
-        if (!$invite) {
-            $this->editCallbackMessage(
-                $callback,
-                $telegram,
-                "❌ Это приглашение больше недействительно."
-            );
+        if (!$invite || !$invite->isValid()) {
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' =>
+                    "❌ <b>Приглашение недействительно.</b>\n\n" .
+                    "Оно могло истечь, быть отключено или достигнуть лимита.",
+                'parse_mode' => 'HTML',
+            ]);
 
-            return;
+            return true;
         }
 
         $clan = $invite->clan;
 
         if (!$clan || !$clan->isActive()) {
-            $this->editCallbackMessage(
-                $callback,
-                $telegram,
-                "❌ Этот клан больше недоступен."
-            );
-
-            return;
-        }
-
-        if (!$this->isMainChatMember(
-            $telegram,
-            $telegramId
-        )) {
             $telegram->sendMessage([
-                'chat_id' => $callback->message->chat->id,
+                'chat_id' => $chatId,
                 'text' =>
-                    "❌ <b>Вступление недоступно.</b>\n\n" .
-                    "Чтобы вступить в клан, вы должны состоять в главном чате проекта.",
-                'parse_mode' => 'HTML',
+                    "❌ Этот клан больше не активен.",
             ]);
 
-            return;
+            return true;
         }
 
-        $telegramUser = TelegramUser::query()
-            ->where('telegram_id', $telegramId)
-            ->first();
+        $chatLink = $clan->chat_link;
 
-        if (!$telegramUser) {
-            $from = $callback->from;
-
-            $telegramUser = TelegramUser::query()->updateOrCreate(
-                [
-                    'telegram_id' => $telegramId,
-                ],
-                [
-                    'username' => $from->username ?? null,
-                    'first_name' => $from->first_name ?? null,
-                    'last_name' => $from->last_name ?? null,
-                ]
-            );
+        if (!$chatLink && $clan->chat_username) {
+            $chatLink =
+                'https://t.me/' .
+                ltrim($clan->chat_username, '@');
         }
 
-        $service = app(ClanService::class);
+        $text =
+            "🏰 <b>Вас приглашают в клан!</b>\n\n" .
 
-        $alreadyMember = \App\Models\ClanMember::query()
-            ->where('user_id', $telegramUser->id)
-            ->where('status', 'active')
-            ->first();
-
-        if ($alreadyMember) {
-            if ($alreadyMember->clan_id === $clan->id) {
-                $this->editCallbackMessage(
-                    $callback,
-                    $telegram,
-                    "⚔️ Вы уже состоите в клане <b>" .
-                    $this->escapeHtml($clan->name) .
-                    "</b>."
-                );
-
-                return;
-            }
-
-            $otherClan = $alreadyMember->clan;
-
-            $this->editCallbackMessage(
-                $callback,
-                $telegram,
-                "❌ Вы уже состоите в другом клане:\n\n" .
-                "🏰 <b>" .
-                $this->escapeHtml(
-                    $otherClan?->name ?? 'Неизвестный клан'
-                ) .
-                "</b>"
-            );
-
-            return;
-        }
-
-        try {
-            $service->useInvite(
-                invite: $invite,
-                userId: $telegramUser->id,
-            );
-
-        } catch (RuntimeException $e) {
-            $this->editCallbackMessage(
-                $callback,
-                $telegram,
-                "❌ " .
-                $this->escapeHtml($e->getMessage())
-            );
-
-            return;
-        }
-
-        $memberCount = $clan->members()
-            ->where('status', 'active')
-            ->count();
-
-        $this->editCallbackMessage(
-            $callback,
-            $telegram,
-            "⚔️ <b>Вы вступили в клан!</b>\n\n" .
             "🏰 <b>" .
             $this->escapeHtml($clan->name) .
             "</b>\n\n" .
-            "👥 Участников клана: <b>{$memberCount}</b>\n\n" .
-            "Добро пожаловать!"
-        );
+
+            "👥 Участников: " .
+            (int) $clan->member_count .
+            "\n";
+
+        if ($chatLink) {
+            $text .=
+                "💬 <a href=\"" .
+                $this->escapeHtml($chatLink) .
+                "\">Открыть чат клана</a>\n";
+        }
+
+        $text .=
+            "\nНажмите кнопку ниже, чтобы вступить.";
+
+        $telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => true,
+            'reply_markup' => json_encode([
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' => '⚔️ Вступить в клан',
+                            'callback_data' => 'clan_join_' . $token,
+                        ],
+                    ],
+                ],
+            ]),
+        ]);
+
+        return true;
     }
 
     /**
-     * Проверяет участника главного чата.
+     * ================================================================
+     * CALLBACK
+     * ================================================================
      */
-    private function isMainChatMember(
-        Api $telegram,
-        int $telegramId
-    ): bool {
+    private function handleCallback($message, Api $telegram): bool
+    {
+        $callback = $message->callback_query;
+
+        $data = $callback->data ?? '';
+        $userId = (int) ($callback->from->id ?? 0);
+        $callbackMessage = $callback->message ?? null;
+
+        if (!preg_match('/^clan_join_([A-Za-z0-9]+)$/', $data, $matches)) {
+            return false;
+        }
+
+        $token = $matches[1];
+
         try {
-            $member = $telegram->getChatMember([
-                'chat_id' => self::MAIN_CHAT_ID,
-                'user_id' => $telegramId,
-            ]);
 
-            $status = $member->status ?? null;
+            $clanService = app(ClanService::class);
 
-            if (
-                in_array(
-                    $status,
-                    [
-                        'creator',
-                        'administrator',
-                        'member',
-                    ],
-                    true
-                )
-            ) {
+            $invite = $clanService->getInviteByToken($token);
+
+            if (!$invite || !$invite->isValid()) {
+
+                $telegram->answerCallbackQuery([
+                    'callback_query_id' => $callback->id,
+                    'text' => '❌ Приглашение недействительно.',
+                    'show_alert' => true,
+                ]);
+
                 return true;
             }
 
-            if (
-                $status === 'restricted' &&
-                ($member->is_member ?? false)
-            ) {
+            $clan = $invite->clan;
+
+            if (!$clan || !$clan->isActive()) {
+
+                $telegram->answerCallbackQuery([
+                    'callback_query_id' => $callback->id,
+                    'text' => '❌ Клан больше не активен.',
+                    'show_alert' => true,
+                ]);
+
                 return true;
+            }
+
+            /*
+             * Проверяем, находится ли пользователь в главном чате.
+             */
+            if (!$this->isMainChatMember($telegram, $userId)) {
+
+                $telegram->answerCallbackQuery([
+                    'callback_query_id' => $callback->id,
+                    'text' =>
+                        '❌ Сначала вступите в главный чат.',
+                    'show_alert' => true,
+                ]);
+
+                return true;
+            }
+
+            /*
+             * Проверяем, не состоит ли уже пользователь в другом клане.
+             */
+            $existingMember = $clanService->getActiveClanForUser(
+                $userId
+            );
+
+            if ($existingMember) {
+
+                if ((int) $existingMember->id === (int) $clan->id) {
+
+                    $telegram->answerCallbackQuery([
+                        'callback_query_id' => $callback->id,
+                        'text' => 'Вы уже состоите в этом клане.',
+                        'show_alert' => true,
+                    ]);
+
+                } else {
+
+                    $telegram->answerCallbackQuery([
+                        'callback_query_id' => $callback->id,
+                        'text' =>
+                            '❌ Вы уже состоите в другом клане.',
+                        'show_alert' => true,
+                    ]);
+                }
+
+                return true;
+            }
+
+            /*
+             * Добавляем пользователя.
+             */
+            $clanService->useInvite(
+                invite: $invite,
+                userId: $userId
+            );
+
+            $telegram->answerCallbackQuery([
+                'callback_query_id' => $callback->id,
+                'text' => '⚔️ Вы вступили в клан!',
+                'show_alert' => false,
+            ]);
+
+            /*
+             * Сообщение пользователю.
+             */
+            $chatLink = $clan->chat_link;
+
+            if (!$chatLink && $clan->chat_username) {
+                $chatLink =
+                    'https://t.me/' .
+                    ltrim($clan->chat_username, '@');
+            }
+
+            $text =
+                "⚔️ <b>Добро пожаловать в клан!</b>\n\n" .
+                "🏰 <b>" .
+                $this->escapeHtml($clan->name) .
+                "</b>\n\n" .
+                "👥 Участников: " .
+                (int) $clan->member_count .
+                "\n";
+
+            if ($chatLink) {
+                $text .=
+                    "\n💬 <a href=\"" .
+                    $this->escapeHtml($chatLink) .
+                    "\">Открыть чат клана</a>";
+            }
+
+            $telegram->sendMessage([
+                'chat_id' => $callbackMessage->chat->id,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true,
+            ]);
+
+            return true;
+
+        } catch (Throwable $e) {
+
+            Log::error('Clan join callback failed', [
+                'user_id' => $userId,
+                'token' => $token,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            $telegram->answerCallbackQuery([
+                'callback_query_id' => $callback->id,
+                'text' => '❌ Не удалось вступить в клан.',
+                'show_alert' => true,
+            ]);
+
+            return true;
+        }
+    }
+
+    /**
+     * ================================================================
+     * ПРОВЕРКА ГЛАВНОГО ЧАТА
+     * ================================================================
+     */
+    private function isMainChat(int $chatId): bool
+    {
+        return $chatId === self::MAIN_CHAT_ID;
+    }
+
+    /**
+     * ================================================================
+     * ПРОВЕРКА УЧАСТНИКА ГЛАВНОГО ЧАТА
+     * ================================================================
+     */
+    private function isMainChatMember(
+        Api $telegram,
+        int $userId
+    ): bool {
+        try {
+
+            $member = $telegram->getChatMember([
+                'chat_id' => self::MAIN_CHAT_ID,
+                'user_id' => $userId,
+            ]);
+
+            $status = is_object($member)
+                ? ($member->status ?? null)
+                : ($member['status'] ?? null);
+
+            if (in_array(
+                $status,
+                ['creator', 'administrator', 'member'],
+                true
+            )) {
+                return true;
+            }
+
+            if ($status === 'restricted') {
+
+                $isMember = is_object($member)
+                    ? ($member->is_member ?? false)
+                    : ($member['is_member'] ?? false);
+
+                return (bool) $isMember;
             }
 
             return false;
 
         } catch (Throwable $e) {
-            Log::warning(
-                'Main chat membership check failed',
-                [
-                    'user_id' => $telegramId,
-                    'chat_id' => self::MAIN_CHAT_ID,
-                    'message' => $e->getMessage(),
-                    'exception' => get_class($e),
-                ]
-            );
+
+            Log::warning('Main chat membership check failed', [
+                'user_id' => $userId,
+                'chat_id' => self::MAIN_CHAT_ID,
+                'error' => $e->getMessage(),
+            ]);
 
             return false;
         }
     }
 
     /**
-     * Нормализация Telegram chat ID / username.
+     * ================================================================
+     * НОРМАЛИЗАЦИЯ TELEGRAM CHAT ID
+     * ================================================================
      */
     private function normalizeChatId(string $input): string|int|null
     {
@@ -1266,38 +1198,72 @@ class ClanHandler
             return null;
         }
 
+        /*
+         * Numeric ID.
+         *
+         * Например:
+         * -1001234567890
+         */
         if (preg_match('/^-?\d+$/', $input)) {
             return (int) $input;
         }
 
+        /*
+         * Убираем пробелы.
+         */
+        $input = trim($input);
+
+        /*
+         * https://t.me/username
+         * http://t.me/username
+         * https://telegram.me/username
+         * http://telegram.me/username
+         */
         $input = preg_replace(
-            '#^https?://t\.me/#i',
+            '#^https?://(?:www\.)?(?:t\.me|telegram\.me)/#i',
             '',
             $input
         );
 
+        /*
+         * t.me/username
+         * telegram.me/username
+         */
         $input = preg_replace(
-            '#^t\.me/#i',
+            '#^(?:www\.)?(?:t\.me|telegram\.me)/#i',
             '',
             $input
         );
 
+        /*
+         * Убираем @.
+         */
         $input = ltrim($input, '@');
 
-        $input = preg_replace(
-            '/[?#].*$/',
-            '',
-            $input
-        );
+        /*
+         * Убираем /.
+         */
+        $input = trim($input, '/');
+
+        /*
+         * Убираем query string и fragment.
+         *
+         * Например:
+         * ShohKingChat?foo=bar
+         */
+        $input = preg_replace('/[?#].*$/', '', $input);
+
+        $input = trim($input, '/ ');
 
         if ($input === '') {
             return null;
         }
 
-        if (preg_match(
-            '/^[A-Za-z0-9_]{5,}$/',
-            $input
-        )) {
+        /*
+         * Telegram username:
+         * от 5 до 32 символов.
+         */
+        if (preg_match('/^[A-Za-z0-9_]{5,32}$/', $input)) {
             return '@' . $input;
         }
 
@@ -1305,48 +1271,62 @@ class ClanHandler
     }
 
     /**
-     * Редактирование callback-сообщения.
+     * ================================================================
+     * ССЫЛКА НА ЧАТ
+     * ================================================================
      */
-    private function editCallbackMessage(
-        $callback,
-        Api $telegram,
-        string $text
-    ): void {
-        try {
-            $telegram->editMessageText([
-                'chat_id' =>
-                    $callback->message->chat->id,
-                'message_id' =>
-                    $callback->message->message_id,
-                'text' => $text,
-                'parse_mode' => 'HTML',
-                'reply_markup' => json_encode([
-                    'inline_keyboard' => [],
-                ]),
-            ]);
-
-        } catch (Throwable $e) {
-            try {
-                $telegram->sendMessage([
-                    'chat_id' =>
-                        $callback->message->chat->id,
-                    'text' => $text,
-                    'parse_mode' => 'HTML',
-                ]);
-            } catch (Throwable $sendException) {
-                Log::warning(
-                    'Could not send clan callback result',
-                    [
-                        'message' =>
-                            $sendException->getMessage(),
-                    ]
-                );
-            }
+    private function buildChatLink(
+        ?string $username,
+        int $chatId
+    ): ?string {
+        if ($username) {
+            return 'https://t.me/' .
+                ltrim($username, '@');
         }
+
+        /*
+         * Для приватных чатов по одному ID публичную ссылку
+         * построить нельзя.
+         */
+        return null;
     }
 
     /**
-     * Экранирование HTML.
+     * ================================================================
+     * USERNAME БОТА
+     * ================================================================
+     */
+    private function getBotUsername(Api $telegram): string
+    {
+        try {
+
+            $me = $telegram->getMe();
+
+            $username = is_object($me)
+                ? ($me->username ?? null)
+                : ($me['username'] ?? null);
+
+            if ($username) {
+                return ltrim($username, '@');
+            }
+
+        } catch (Throwable $e) {
+
+            Log::warning('Unable to get bot username', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        /*
+         * Запасной вариант.
+         */
+        return 'YkSUS10_bot';
+    }
+
+    /**
+     * ================================================================
+     * HTML ESCAPE
+     * ================================================================
      */
     private function escapeHtml(?string $value): string
     {
