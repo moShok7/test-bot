@@ -239,7 +239,7 @@ class ClanHandler
                 'telegram_user_id' => $userId,
             ],
             [
-                'step' => null,
+                'step' => 'clan_name',
             ]
         );
 
