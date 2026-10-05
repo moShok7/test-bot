@@ -7,7 +7,7 @@ use App\Models\Clan;
 use App\Models\ClanInvite;
 use App\Models\ClanMember;
 use App\Models\TelegramUser;
-use App\Services\Clan\ClanService;
+use App\Services\bot\Clan\ClanService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Telegram\Bot\Api;
