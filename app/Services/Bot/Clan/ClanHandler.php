@@ -5,6 +5,7 @@ namespace App\Services\Bot\Clan;
 use App\Models\BotSession;
 use App\Models\Clan;
 use App\Models\ClanMember;
+use App\Models\ClanInvite;
 use App\Models\TelegramUser;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
@@ -23,15 +24,6 @@ class ClanHandler
     public function handle($message, Api $telegram): bool
     {
         try {
-
-            /*
-             * ---------------------------------------------------------
-             * CALLBACK
-             * ---------------------------------------------------------
-             */
-            if (isset($message->callback_query)) {
-                return $this->handleCallback($message, $telegram);
-            }
 
             $text = trim($message->text ?? '');
             $chatId = (int) ($message->chat->id ?? 0);
@@ -798,24 +790,19 @@ class ClanHandler
             "👥 <b>Участников:</b> " .
             $memberCount .
             "\n\n" .
-            "📨 <b>Приглашение готово.</b>\n" .
-            "Отправьте эту кнопку игроку, чтобы он открыл приглашение и вступил в клан.";
+            "📨 <b>Ссылка-приглашение:</b>\n" .
+            "<a href=\"" .
+            $this->escapeHtml($inviteLink) .
+            "\">" .
+            $this->escapeHtml($inviteLink) .
+            "</a>\n\n" .
+            "Отправьте эту ссылку игрокам.";
 
         $telegram->sendMessage([
             'chat_id' => $mainChatId,
             'text' => $text,
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' => '⚔️ Открыть приглашение',
-                            'url' => $inviteLink,
-                        ],
-                    ],
-                ],
-            ]),
         ]);
 
         return true;
@@ -966,6 +953,25 @@ class ClanHandler
                     "💬 <a href=\"" .
                     $this->escapeHtml($chatLink) .
                     "\">Открыть чат</a>\n";
+            }
+
+            // Получаем активное приглашение клана.
+            $invite = ClanInvite::query()
+                ->where('clan_id', $clan->id)
+                ->whereNull('used_at')
+                ->latest('id')
+                ->first();
+
+            if ($invite && $invite->token) {
+                $inviteLink = $this->buildClanInviteLink(
+                    $this->getBotUsername($telegram),
+                    (string) $invite->token
+                );
+
+                $text .=
+                    "📨 <a href=\"" .
+                    $this->escapeHtml($inviteLink) .
+                    "\">Ссылка-приглашение</a>\n";
             }
 
             $text .= "\n";
@@ -1201,7 +1207,17 @@ class ClanHandler
 
         return true;
     }
-}
+
+    /**
+     * ================================================================
+     * MAIN CHAT
+     * ================================================================
+     */
+    private function isMainChat(int $chatId): bool
+    {
+        return $chatId === self::MAIN_CHAT_ID;
+    }
+
     /**
      * ================================================================
      * MAIN CHAT MEMBER
