@@ -15,7 +15,7 @@ class ClanModerationService
     /**
      * Главный чат, в котором разрешена модерация кланов.
      */
-    private const MAIN_CHAT_ID = -1004344778682;
+    private const MAIN_CHAT_ID = -1004414081262;
 
     /**
      * Обработка:
