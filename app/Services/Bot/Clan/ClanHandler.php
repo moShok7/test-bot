@@ -903,55 +903,62 @@ class ClanHandler
         */
 
         $text =
-            "🏰 <b>Зарегистрированные кланы</b>\n\n";
+    "🏴‍☠️ <b>РЕЕСТР КЛАНОВ</b>\n" .
+    "━━━━━━━━━━━━━━━━━━\n\n";
 
-        $number = 1;
+$keyboard = [];
+$number = 1;
 
-        foreach ($clans as $clan) {
+foreach ($clans as $clan) {
 
-            $clanMembers = $clan->members()
-                ->where('status', 'active')
-                ->count();
+    $clanMembers = $clan->members()
+        ->where('status', 'active')
+        ->count();
 
-            $creator = $clan->creator_username
-                ? '@' . ltrim($clan->creator_username, '@')
-                : 'не указан';
+    $creator = $clan->creator_username
+        ? '@' . ltrim($clan->creator_username, '@')
+        : 'Неизвестен';
 
-            $text .=
-                "<b>{$number}. {$this->escapeHtml($clan->name)}</b>\n" .
-                "👑 Глава: {$this->escapeHtml($creator)}\n" .
-                "⚔️ В клане: <b>{$clanMembers}</b>\n";
+    $text .=
+        "🏴‍☠️ <b>{$number}. {$this->escapeHtml($clan->name)}</b>\n" .
+        "👑 <b>Лидер:</b> {$this->escapeHtml($creator)}\n" .
+        "👥 <b>Участников:</b> {$clanMembers}\n\n";
 
-            if ($clan->chat_link) {
-                $text .=
-                    "💬 <a href=\"" .
-                    $this->escapeHtml($clan->chat_link) .
-                    "\">Чат клана</a>\n";
-            } elseif ($clan->chat_username) {
-                $link =
-                    'https://t.me/' .
-                    ltrim($clan->chat_username, '@');
+    $chatLink = null;
 
-                $text .=
-                    "💬 <a href=\"" .
-                    $this->escapeHtml($link) .
-                    "\">Чат клана</a>\n";
-            }
+    if ($clan->chat_link) {
+        $chatLink = $clan->chat_link;
+    } elseif ($clan->chat_username) {
+        $chatLink =
+            'https://t.me/' .
+            ltrim($clan->chat_username, '@');
+    }
 
-            $text .= "\n";
+    if ($chatLink) {
+        $keyboard[] = [
+            [
+                'text' => '💬 Открыть чат',
+                'url' => $chatLink,
+            ],
+        ];
+    }
 
-            $number++;
-        }
+    $number++;
+}
 
-        $text .=
-            "📊 Всего кланов: <b>{$clans->count()}</b>";
+$text .=
+    "━━━━━━━━━━━━━━━━━━\n" .
+    "📋 <b>Всего кланов:</b> {$clans->count()}";
 
-        $telegram->sendMessage([
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ]);
+$telegram->sendMessage([
+    'chat_id' => $chatId,
+    'text' => $text,
+    'parse_mode' => 'HTML',
+    'disable_web_page_preview' => true,
+    'reply_markup' => json_encode([
+        'inline_keyboard' => $keyboard,
+    ]),
+]);
     }
 
     /**
