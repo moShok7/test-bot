@@ -178,7 +178,7 @@ class ClanHandler
 
             return false;
 
-        } catch (Throwable $e) {
+                } catch (Throwable $e) {
 
             Log::error(
                 'Clan handler error',
@@ -186,13 +186,24 @@ class ClanHandler
                     'message' => $e->getMessage(),
                     'file' => $e->getFile(),
                     'line' => $e->getLine(),
+                    'trace' => $e->getTraceAsString(),
                 ]
             );
 
             try {
                 $telegram->sendMessage([
                     'chat_id' => $message->chat->id ?? null,
-                    'text' => '❌ Произошла ошибка при обработке команды.',
+                    'text' =>
+                        "❌ <b>Ошибка ClanHandler</b>\n\n" .
+                        "<b>Сообщение:</b>\n" .
+                        $this->escapeHtml($e->getMessage()) .
+                        "\n\n" .
+                        "<b>Файл:</b>\n" .
+                        $this->escapeHtml(basename($e->getFile())) .
+                        "\n" .
+                        "<b>Строка:</b> " .
+                        $e->getLine(),
+                    'parse_mode' => 'HTML',
                 ]);
             } catch (Throwable $sendException) {
 
