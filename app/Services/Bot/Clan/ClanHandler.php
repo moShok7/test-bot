@@ -984,115 +984,7 @@ class ClanHandler
      * /start clan_TOKEN
      * ================================================================
      */
-
-
-
-    private function showClanInvite(
-        $message,
-        Api $telegram,
-        string $token
-    ): bool {
-
-        $chatId = (int) $message->chat->id;
-
-        $clanService = app(ClanService::class);
-
-        $invite = $clanService->getValidInvite($token);
-
-        if (!$invite) {
-
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' =>
-                    "❌ <b>Приглашение недействительно.</b>",
-                'parse_mode' => 'HTML',
-            ]);
-
-            return true;
-        }
-
-        $clan = $invite->clan;
-
-        if (!$clan || !$clan->isActive()) {
-
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' =>
-                    "❌ Этот клан больше не активен.",
-            ]);
-
-            return true;
-        }
-
-        $chatLink = $clan->chat_link;
-
-        if (!$chatLink && $clan->chat_username) {
-
-            $chatLink =
-                'https://t.me/' .
-                ltrim($clan->chat_username, '@');
-        }
-
-        $text =
-            "🏰 <b>Приглашение в клан</b>\n\n" .
-
-            "🏰 <b>" .
-            $this->escapeHtml($clan->name) .
-            "</b>\n\n" .
-
-            "👥 Участников: " .
-            (int) $clan->member_count .
-            "\n";
-
-        if ($chatLink) {
-
-            $text .=
-                "💬 <a href=\"" .
-                $this->escapeHtml($chatLink) .
-                "\">Открыть чат клана</a>\n";
-        }
-
-        $text .=
-            "\nНажмите кнопку ниже, чтобы вступить.";
-
-        $inviteKeyboard = [
-            [
-                [
-                    'text' => '⚔️ Вступить в клан',
-                    'callback_data' => 'clan_join_' . $token,
-                ],
-            ],
-        ];
-
-        if ($chatLink) {
-            $inviteKeyboard[] = [
-                [
-                    'text' => '💬 Открыть чат клана',
-                    'url' => $chatLink,
-                ],
-            ];
-        }
-
-        $telegram->sendMessage([
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-            'reply_markup' => json_encode(
-                ['inline_keyboard' => $inviteKeyboard],
-                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-            ),
-        ]);
-
-        return true;
-    }
-
-    /**
-     * ================================================================
-     * CALLBACK JOIN
-     * ================================================================
-     */
-    private function showClanInvite(
+  private function showClanInvite(
     $message,
     Api $telegram,
     string $token
@@ -1310,17 +1202,6 @@ class ClanHandler
         return true;
     }
 }
-
-    /**
-     * ================================================================
-     * MAIN CHAT
-     * ================================================================
-     */
-    private function isMainChat(int $chatId): bool
-    {
-        return $chatId === self::MAIN_CHAT_ID;
-    }
-
     /**
      * ================================================================
      * MAIN CHAT MEMBER
