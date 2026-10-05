@@ -4,10 +4,7 @@ namespace App\Services\Bot\Clan;
 
 use App\Models\BotSession;
 use App\Models\Clan;
-use App\Models\ClanInvite;
-use App\Models\ClanMember;
 use App\Models\TelegramUser;
-use App\Services\Clan\ClanService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Telegram\Bot\Api;
@@ -246,12 +243,6 @@ class ClanHandler
                 return true;
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | TelegramUser
-            |--------------------------------------------------------------------------
-            */
-
             $telegramUser = TelegramUser::query()
                 ->where('telegram_id', $telegramId)
                 ->first();
@@ -271,38 +262,15 @@ class ClanHandler
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Количество участников
-            |--------------------------------------------------------------------------
-            |
-            | Только наша БД.
-            | Telegram getChatMembersCount() НЕ используется.
-            |
-            */
-
-            $memberCount = ClanMember::query()
-                ->where('clan_id', $clan->id)
+            $memberCount = $clan->members()
                 ->where('status', 'active')
                 ->count();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Создатель
-            |--------------------------------------------------------------------------
-            */
 
             $creator = $clan->creator_username
                 ? '@' . ltrim($clan->creator_username, '@')
                 : 'не указан';
 
-            /*
-            |--------------------------------------------------------------------------
-            | Ссылка на чат
-            |--------------------------------------------------------------------------
-            */
-
-            $chatText = null;
+            $chatText = 'не указан';
 
             if ($clan->chat_link) {
                 $chatText = $clan->chat_link;
@@ -312,50 +280,31 @@ class ClanHandler
                     ltrim($clan->chat_username, '@');
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Текст
-            |--------------------------------------------------------------------------
-            */
+            $text =
+                "⚔️ <b>Приглашение в клан</b>\n\n" .
+                "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n\n" .
+                "👑 Глава: {$this->escapeHtml($creator)}\n" .
+                "⚔️ В клане: {$memberCount}\n\n";
 
-            $inviteText =
-                "🏴‍☠️ <b>Приглашение в клан</b>\n\n" .
-                "🏴‍☠️ <b>" .
-                $this->escapeHtml($clan->name) .
-                "</b>\n\n" .
-                "👑 <b>Лидер:</b> " .
-                $this->escapeHtml($creator) .
-                "\n" .
-                "👥 <b>Участников:</b> " .
-                $memberCount .
-                "\n\n";
-
-            if ($chatText) {
-                $inviteText .=
-                    "💬 <b>Чат клана:</b>\n" .
-                    $this->escapeHtml($chatText) .
+            if ($chatText !== 'не указан') {
+                $text .=
+                    "💬 Чат клана:\n" .
+                    $chatText .
                     "\n\n";
             }
 
-            $inviteText .=
-                "Нажмите кнопку ниже, чтобы вступить в клан.";
-
-            /*
-            |--------------------------------------------------------------------------
-            | Кнопка вступления
-            |--------------------------------------------------------------------------
-            */
+            $text .=
+                "Чтобы вступить в клан, нажмите кнопку ниже.";
 
             $telegram->sendMessage([
                 'chat_id' => $message->chat->id,
-                'text' => $inviteText,
+                'text' => $text,
                 'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
                 'reply_markup' => json_encode([
                     'inline_keyboard' => [
                         [
                             [
-                                'text' => '➕ Вступить в клан',
+                                'text' => '⚔️ Вступить',
                                 'callback_data' =>
                                     'clan_join_' . $invite->token,
                             ],
@@ -459,12 +408,6 @@ class ClanHandler
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | TelegramUser
-        |--------------------------------------------------------------------------
-        */
-
         $telegramUser = TelegramUser::query()
             ->where('telegram_id', $telegramId)
             ->first();
@@ -484,12 +427,6 @@ class ClanHandler
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем существующий клан
-        |--------------------------------------------------------------------------
-        */
-
         $service = app(ClanService::class);
 
         $existingClan = $service->getClanByCreator(
@@ -501,21 +438,13 @@ class ClanHandler
                 'chat_id' => $message->chat->id,
                 'text' =>
                     "❌ Вы уже зарегистрировали клан:\n\n" .
-                    "🏴‍☠️ <b>" .
-                    $this->escapeHtml($existingClan->name) .
-                    "</b>\n\n" .
+                    "🏰 <b>{$this->escapeHtml($existingClan->name)}</b>\n\n" .
                     "Один пользователь может создать только один клан.",
                 'parse_mode' => 'HTML',
             ]);
 
             return;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Создаём сессию
-        |--------------------------------------------------------------------------
-        */
 
         BotSession::query()
             ->where('telegram_user_id', $telegramUser->id)
@@ -529,7 +458,7 @@ class ClanHandler
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
             'text' =>
-                "🏴‍☠️ <b>Создание клана</b>\n\n" .
+                "🏰 <b>Создание клана</b>\n\n" .
                 "Шаг 1 из 2\n\n" .
                 "Введите <b>название вашего клана</b>.\n\n" .
                 "Максимум: 100 символов.",
@@ -588,7 +517,7 @@ class ClanHandler
                 'chat_id' => $message->chat->id,
                 'text' =>
                     "❌ Название слишком длинное.\n\n" .
-                    "Максимум: 100 символов.",
+                    "Максимум — 100 символов.",
             ]);
 
             return;
@@ -602,9 +531,7 @@ class ClanHandler
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
             'text' =>
-                "🏴‍☠️ Название клана: <b>" .
-                $this->escapeHtml($name) .
-                "</b>\n\n" .
+                "🏰 Название клана: <b>{$this->escapeHtml($name)}</b>\n\n" .
                 "Шаг 2 из 2\n\n" .
                 "Теперь отправьте <b>Telegram-чат клана</b>.\n\n" .
                 "Можно отправить:\n" .
@@ -726,23 +653,23 @@ class ClanHandler
 
         $chatType = $chat->type ?? null;
 
-       if (!in_array(
-    $chatType,
-    ['group', 'supergroup', 'channel'],
-    true
-)) {
-    $telegram->sendMessage([
-        'chat_id' => $message->chat->id,
-        'text' =>
-            "❌ Для клана можно зарегистрировать только группу, супергруппу или канал Telegram.",
-    ]);
+        if (!in_array(
+            $chatType,
+            ['group', 'supergroup'],
+            true
+        )) {
+            $telegram->sendMessage([
+                'chat_id' => $message->chat->id,
+                'text' =>
+                    "❌ Для клана можно зарегистрировать только группу или супергруппу Telegram.",
+            ]);
 
-    return;
-}
+            return;
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем владельца
+        | Проверяем OWNER
         |--------------------------------------------------------------------------
         */
 
@@ -805,9 +732,7 @@ class ClanHandler
                 'chat_id' => $message->chat->id,
                 'text' =>
                     "❌ Этот Telegram-чат уже зарегистрирован.\n\n" .
-                    "🏴‍☠️ Клан: <b>" .
-                    $this->escapeHtml($existingClan->name) .
-                    "</b>",
+                    "🏰 Клан: <b>{$this->escapeHtml($existingClan->name)}</b>",
                 'parse_mode' => 'HTML',
             ]);
 
@@ -922,21 +847,14 @@ class ClanHandler
             'chat_id' => $message->chat->id,
             'text' =>
                 "🎉 <b>Клан успешно зарегистрирован!</b>\n\n" .
-                "🏴‍☠️ <b>" .
-                $this->escapeHtml($clan->name) .
-                "</b>\n" .
-                "💬 Чат: <b>" .
-                $this->escapeHtml($chatName) .
-                "</b>\n" .
-                "👥 В клане: <b>1</b>\n\n" .
+                "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n" .
+                "💬 Чат: <b>{$this->escapeHtml($chatName)}</b>\n" .
+                "⚔️ В клане: <b>1</b>\n\n" .
                 "👑 Вы являетесь главой клана.\n\n" .
                 "🔗 <b>Ваша ссылка-приглашение:</b>\n" .
-                "<a href=\"" .
-                $this->escapeHtml($inviteLink) .
-                "\">👉 Нажать для перехода</a>\n\n" .
+                "<a href=\"{$this->escapeHtml($inviteLink)}\">👉 Нажать для перехода</a>\n\n" .
                 "Отправьте эту ссылку игрокам, чтобы они могли вступить в клан.",
             'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
         ]);
     }
 
@@ -970,7 +888,7 @@ class ClanHandler
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
-                    "🏴‍☠️ <b>РЕЕСТР КЛАНОВ</b>\n\n" .
+                    "🏰 <b>Кланы</b>\n\n" .
                     "Пока зарегистрированных кланов нет.",
                 'parse_mode' => 'HTML',
             ]);
@@ -980,164 +898,59 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Заголовок
+        | Формируем сообщение
         |--------------------------------------------------------------------------
         */
 
         $text =
-            "🏴‍☠️ <b>РЕЕСТР КЛАНОВ</b>\n" .
-            "━━━━━━━━━━━━━━━━━━\n\n";
+            "🏰 <b>Зарегистрированные кланы</b>\n\n";
 
-        $keyboard = [];
         $number = 1;
 
         foreach ($clans as $clan) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | Количество участников только из ClanMember
-            |--------------------------------------------------------------------------
-            */
-
-            $clanMembers = ClanMember::query()
-                ->where('clan_id', $clan->id)
+            $clanMembers = $clan->members()
                 ->where('status', 'active')
                 ->count();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Лидер
-            |--------------------------------------------------------------------------
-            */
-
             $creator = $clan->creator_username
                 ? '@' . ltrim($clan->creator_username, '@')
-                : 'Неизвестен';
-
-            /*
-            |--------------------------------------------------------------------------
-            | Информация о клане
-            |--------------------------------------------------------------------------
-            */
+                : 'не указан';
 
             $text .=
-                "🏴‍☠️ <b>{$number}. " .
-                $this->escapeHtml($clan->name) .
-                "</b>\n" .
-                "👑 <b>Лидер:</b> " .
-                $this->escapeHtml($creator) .
-                "\n" .
-                "👥 <b>Участников:</b> " .
-                $clanMembers .
-                "\n\n";
-
-            /*
-            |--------------------------------------------------------------------------
-            | Ссылка на Telegram-чат
-            |--------------------------------------------------------------------------
-            */
-
-            $chatLink = null;
+                "<b>{$number}. {$this->escapeHtml($clan->name)}</b>\n" .
+                "👑 Глава: {$this->escapeHtml($creator)}\n" .
+                "⚔️ В клане: <b>{$clanMembers}</b>\n";
 
             if ($clan->chat_link) {
-                $chatLink = $clan->chat_link;
+                $text .=
+                    "💬 <a href=\"" .
+                    $this->escapeHtml($clan->chat_link) .
+                    "\">Чат клана</a>\n";
             } elseif ($clan->chat_username) {
-                $chatLink =
+                $link =
                     'https://t.me/' .
                     ltrim($clan->chat_username, '@');
+
+                $text .=
+                    "💬 <a href=\"" .
+                    $this->escapeHtml($link) .
+                    "\">Чат клана</a>\n";
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Получаем активное приглашение
-            |--------------------------------------------------------------------------
-            */
-
-            $invite = ClanInvite::query()
-                ->where('clan_id', $clan->id)
-                ->where('is_active', true)
-                ->latest('id')
-                ->first();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Кнопки текущего клана
-            |--------------------------------------------------------------------------
-            */
-
-            $buttons = [];
-
-            if ($chatLink) {
-                $buttons[] = [
-                    'text' => '💬 Открыть чат',
-                    'url' => $chatLink,
-                ];
-            }
-
-            if ($invite) {
-                $joinLink =
-                    'https://t.me/YkSUS10_bot?start=clan_' .
-                    $invite->token;
-
-                $buttons[] = [
-                    'text' => '➕ Вступить в клан',
-                    'url' => $joinLink,
-                ];
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Добавляем кнопки именно под этим кланом
-            |--------------------------------------------------------------------------
-            */
-
-            if (!empty($buttons)) {
-                $keyboard[] = $buttons;
-            }
+            $text .= "\n";
 
             $number++;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Нижняя часть
-        |--------------------------------------------------------------------------
-        */
-
-        $clanCount = $clans->count();
-
-        $clanWord = match (true) {
-            $clanCount % 10 === 1 &&
-            $clanCount % 100 !== 11 => 'клан',
-
-            $clanCount % 10 >= 2 &&
-            $clanCount % 10 <= 4 &&
-            (
-                $clanCount % 100 < 10 ||
-                $clanCount % 100 >= 20
-            ) => 'клана',
-
-            default => 'кланов',
-        };
-
         $text .=
-            "━━━━━━━━━━━━━━━━━━\n" .
-            "📋 <b>Всего:</b> {$clanCount} {$clanWord}";
-
-        /*
-        |--------------------------------------------------------------------------
-        | Отправляем
-        |--------------------------------------------------------------------------
-        */
+            "📊 Всего кланов: <b>{$clans->count()}</b>";
 
         $telegram->sendMessage([
             'chat_id' => $chatId,
             'text' => $text,
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-            'reply_markup' => json_encode([
-                'inline_keyboard' => $keyboard,
-            ]),
         ]);
     }
 
@@ -1180,12 +993,6 @@ class ClanHandler
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем главный чат
-        |--------------------------------------------------------------------------
-        */
-
         if (!$this->isMainChatMember(
             $telegram,
             $telegramId
@@ -1200,12 +1007,6 @@ class ClanHandler
 
             return;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | TelegramUser
-        |--------------------------------------------------------------------------
-        */
 
         $telegramUser = TelegramUser::query()
             ->where('telegram_id', $telegramId)
@@ -1226,24 +1027,19 @@ class ClanHandler
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем существующий клан пользователя
-        |--------------------------------------------------------------------------
-        */
+        $service = app(ClanService::class);
 
-        $alreadyMember = ClanMember::query()
+        $alreadyMember = \App\Models\ClanMember::query()
             ->where('user_id', $telegramUser->id)
             ->where('status', 'active')
             ->first();
 
         if ($alreadyMember) {
-
             if ($alreadyMember->clan_id === $clan->id) {
                 $this->editCallbackMessage(
                     $callback,
                     $telegram,
-                    "🏴‍☠️ Вы уже состоите в клане <b>" .
+                    "⚔️ Вы уже состоите в клане <b>" .
                     $this->escapeHtml($clan->name) .
                     "</b>."
                 );
@@ -1257,7 +1053,7 @@ class ClanHandler
                 $callback,
                 $telegram,
                 "❌ Вы уже состоите в другом клане:\n\n" .
-                "🏴‍☠️ <b>" .
+                "🏰 <b>" .
                 $this->escapeHtml(
                     $otherClan?->name ?? 'Неизвестный клан'
                 ) .
@@ -1267,14 +1063,8 @@ class ClanHandler
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Используем приглашение
-        |--------------------------------------------------------------------------
-        */
-
         try {
-            app(ClanService::class)->useInvite(
+            $service->useInvite(
                 invite: $invite,
                 userId: $telegramUser->id,
             );
@@ -1290,28 +1080,15 @@ class ClanHandler
             return;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Новый счётчик из БД
-        |--------------------------------------------------------------------------
-        */
-
-        $memberCount = ClanMember::query()
-            ->where('clan_id', $clan->id)
+        $memberCount = $clan->members()
             ->where('status', 'active')
             ->count();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Результат
-        |--------------------------------------------------------------------------
-        */
 
         $this->editCallbackMessage(
             $callback,
             $telegram,
-            "🎉 <b>Вы вступили в клан!</b>\n\n" .
-            "🏴‍☠️ <b>" .
+            "⚔️ <b>Вы вступили в клан!</b>\n\n" .
+            "🏰 <b>" .
             $this->escapeHtml($clan->name) .
             "</b>\n\n" .
             "👥 Участников клана: <b>{$memberCount}</b>\n\n" .
@@ -1374,9 +1151,8 @@ class ClanHandler
     /**
      * Нормализация Telegram chat ID / username.
      */
-    private function normalizeChatId(
-        string $input
-    ): string|int|null {
+    private function normalizeChatId(string $input): string|int|null
+    {
         $input = trim($input);
 
         if ($input === '') {
@@ -1465,9 +1241,8 @@ class ClanHandler
     /**
      * Экранирование HTML.
      */
-    private function escapeHtml(
-        ?string $value
-    ): string {
+    private function escapeHtml(?string $value): string
+    {
         return htmlspecialchars(
             (string) $value,
             ENT_QUOTES | ENT_SUBSTITUTE,
