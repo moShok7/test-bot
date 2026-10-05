@@ -189,6 +189,7 @@ class ClanHandler
 
     /**
      * Deep-link:
+     *
      * /start clan_TOKEN
      */
     public function handleDeepLink($message, Api $telegram): bool
@@ -283,8 +284,7 @@ class ClanHandler
                 "⚔️ <b>Приглашение в клан</b>\n\n" .
                 "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n\n" .
                 "👑 Глава: {$this->escapeHtml($creator)}\n" .
-                "⚔️ В клане: {$memberCount}\n" .
-                "👥 В чате: {$clan->member_count}\n\n";
+                "⚔️ В клане: {$memberCount}\n\n";
 
             if ($chatText !== 'не указан') {
                 $text .=
@@ -358,7 +358,7 @@ class ClanHandler
                         'callback_query_id' => $callback->id,
                     ]);
                 } catch (Throwable $e) {
-                    // Игнорируем.
+                    // Игнорируем ошибку callback.
                 }
 
                 return true;
@@ -741,40 +741,6 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Получаем реальное количество участников
-        |--------------------------------------------------------------------------
-        */
-
-        try {
-            $countResponse = $telegram->getChatMembersCount([
-                'chat_id' => $realChatId,
-            ]);
-
-            $memberCount = (int) $countResponse;
-
-        } catch (Throwable $e) {
-            Log::error(
-                'Clan chat member count failed',
-                [
-                    'chat_id' => $realChatId,
-                    'message' => $e->getMessage(),
-                ]
-            );
-
-            $telegram->sendMessage([
-                'chat_id' => $message->chat->id,
-                'text' =>
-                    "❌ <b>Не удалось получить количество участников чата.</b>\n\n" .
-                    "Telegram вернул ошибку при получении количества участников.\n\n" .
-                    "Убедитесь, что бот находится в этом чате.",
-                'parse_mode' => 'HTML',
-            ]);
-
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
         | Данные чата
         |--------------------------------------------------------------------------
         */
@@ -814,7 +780,6 @@ class ClanHandler
                 chatId: $realChatId,
                 chatUsername: $chatUsername,
                 chatLink: $chatLink,
-                memberCount: $memberCount,
             );
 
         } catch (RuntimeException $e) {
@@ -884,7 +849,6 @@ class ClanHandler
                 "🎉 <b>Клан успешно зарегистрирован!</b>\n\n" .
                 "🏰 <b>{$this->escapeHtml($clan->name)}</b>\n" .
                 "💬 Чат: <b>{$this->escapeHtml($chatName)}</b>\n" .
-                "👥 В чате: <b>{$memberCount}</b>\n" .
                 "⚔️ В клане: <b>1</b>\n\n" .
                 "👑 Вы являетесь главой клана.\n\n" .
                 "🔗 <b>Ваша ссылка-приглашение:</b>\n" .
@@ -897,9 +861,7 @@ class ClanHandler
     /**
      * Список кланов.
      *
-     * ВАЖНО:
-     * Каждый вызов /ms заново получает количество участников
-     * Telegram-чата через Bot API.
+     * Количество участников Telegram-чата НЕ запрашивается.
      */
     private function showClans(
         $message,
@@ -936,56 +898,6 @@ class ClanHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Обновляем количество участников Telegram-чатов
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($clans as $clan) {
-            try {
-                $countResponse = $telegram->getChatMembersCount([
-                    'chat_id' => $clan->chat_id,
-                ]);
-
-                $memberCount = (int) $countResponse;
-
-                $clan->update([
-                    'member_count' => $memberCount,
-                    'member_count_updated_at' => now(),
-                ]);
-
-                /*
-                | Важно: обновляем объект в памяти.
-                */
-                $clan->member_count = $memberCount;
-
-            } catch (Throwable $e) {
-                Log::error(
-                    'Failed to update clan member count',
-                    [
-                        'clan_id' => $clan->id,
-                        'clan_name' => $clan->name,
-                        'chat_id' => $clan->chat_id,
-                        'message' => $e->getMessage(),
-                    ]
-                );
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Сортировка уже по актуальному количеству
-        |--------------------------------------------------------------------------
-        */
-
-        $clans = $clans
-            ->sortBy([
-                ['member_count', 'desc'],
-                ['name', 'asc'],
-            ])
-            ->values();
-
-        /*
-        |--------------------------------------------------------------------------
         | Формируем сообщение
         |--------------------------------------------------------------------------
         */
@@ -1008,7 +920,6 @@ class ClanHandler
             $text .=
                 "<b>{$number}. {$this->escapeHtml($clan->name)}</b>\n" .
                 "👑 Глава: {$this->escapeHtml($creator)}\n" .
-                "👥 В чате: <b>{$clan->member_count}</b>\n" .
                 "⚔️ В клане: <b>{$clanMembers}</b>\n";
 
             if ($clan->chat_link) {
