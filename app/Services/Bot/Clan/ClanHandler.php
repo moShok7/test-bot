@@ -1185,9 +1185,36 @@ private function showClans(
         |--------------------------------------------------------------------------
         */
 
-        $creator = $clan->creator_username
-            ? '@' . ltrim($clan->creator_username, '@')
-            : 'Неизвестен';
+     $creatorUser = TelegramUser::query()
+    ->where('id', $clan->creator_id)
+    ->first();
+
+$creatorUsername = $clan->creator_username ?: $creatorUser?->username;
+$creatorTelegramId = $creatorUser?->telegram_id;
+
+if ($creatorUsername) {
+    // Есть username: показываем @username
+    $leaderHtml = $this->escapeHtml(
+        '@' . ltrim($creatorUsername, '@')
+    );
+} elseif ($creatorTelegramId) {
+    // Username нет: показываем имя + кликабельный профиль
+    $leaderName = trim(
+        ($creatorUser->first_name ?? '') . ' ' .
+        ($creatorUser->last_name ?? '')
+    );
+
+    if ($leaderName === '') {
+        $leaderName = 'Профиль лидера';
+    }
+
+    $leaderHtml =
+        '<a href="tg://openmessage?user_id=' . (int) $creatorTelegramId . '">' .
+        $this->escapeHtml($leaderName) .
+        '</a>';
+} else {
+    $leaderHtml = 'Неизвестен';
+}
 
         /*
         |--------------------------------------------------------------------------
@@ -1223,19 +1250,11 @@ private function showClans(
         |--------------------------------------------------------------------------
         */
 
-        $clanText =
-            "🏴‍☠️ <b>" .
-            $this->escapeHtml($clan->name) .
-            "</b>\n" .
-            "━━━━━━━━━━━━━━━━━━\n\n" .
-
-            "👑 <b>Лидер:</b> " .
-            $this->escapeHtml($creator) .
-            "\n" .
-
-            "👥 <b>Участников:</b> " .
-            $memberCount .
-            "\n";
+      $clanText =
+    "🏴‍☠️ <b>" . $this->escapeHtml($clan->name) . "</b>\n" .
+    "━━━━━━━━━━━━━━━━━━\n\n" .
+    "👑 <b>Лидер:</b> " . $leaderHtml . "\n" .
+    "👥 <b>Участников:</b> " . $memberCount . "\n";
 
         /*
         |--------------------------------------------------------------------------
