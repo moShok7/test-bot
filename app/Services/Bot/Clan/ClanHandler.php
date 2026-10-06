@@ -1995,7 +1995,7 @@ class ClanHandler
             );
         }
 
-        return 'YkSus_test_bot';
+        return 'YkSUS10_bot';
     }
 
     /**
