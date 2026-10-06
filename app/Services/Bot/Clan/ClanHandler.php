@@ -7,7 +7,7 @@ use App\Models\Clan;
 use App\Models\ClanInvite;
 use App\Models\ClanMember;
 use App\Models\TelegramUser;
-use App\Services\bot\Clan\ClanService;
+use App\Services\Bot\Clan\ClanService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Telegram\Bot\Api;
@@ -1222,10 +1222,18 @@ class ClanHandler
             */
 
             $invite = ClanInvite::query()
-                ->where('clan_id', $clan->id)
-                ->where('is_active', true)
-                ->latest('id')
-                ->first();
+    ->where('clan_id', $clan->id)
+    ->where('status', 'active')
+    ->where(function ($query) {
+        $query->whereNull('expires_at')
+              ->orWhere('expires_at', '>', now());
+    })
+    ->where(function ($query) {
+        $query->whereNull('max_uses')
+              ->orWhereColumn('uses', '<', 'max_uses');
+    })
+    ->latest('id')
+    ->first();
 
             /*
             |--------------------------------------------------------------------------
