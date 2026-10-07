@@ -13,7 +13,7 @@ use Throwable;
 class ClanModerationService
 {
     /**
-     * Обработка:
+     * Обработка команд:
      *
      * /mt @username 10m
      * /mt @username 1h
@@ -21,13 +21,22 @@ class ClanModerationService
      *
      * /mr @username
      *
-     * Также:
+     * Также через reply:
      *
-     * /mt 10m   + reply
-     * /mr       + reply
+     * /mt 10m
+     * /mr
      *
-     * Мут действует только в том чате,
-     * в котором была выполнена команда.
+     * ВАЖНО:
+     * Команды можно выполнять В ЛЮБОМ ЧАТЕ.
+     *
+     * Логика:
+     *
+     * 1. Определяем отправителя команды.
+     * 2. Находим его клан по creator_id.
+     * 3. Проверяем, что цель является участником этого клана.
+     * 4. Telegram-мут выдаётся именно в текущем чате.
+     *
+     * Текущий чат НЕ обязан быть зарегистрирован как chat_id клана.
      */
     public function handle($message, Api $telegram): bool
     {
@@ -81,22 +90,19 @@ class ClanModerationService
     }
 
     /**
-     * Находит клан, которому принадлежит текущий Telegram-чат.
+     * Находит клан главы.
      *
-     * Важно:
-     * /mt и /mr не работают в обычных чатах.
+     * В отличие от старой версии:
+     *
+     * НЕ ищем клан по текущему chat_id.
+     *
+     * Команда может выполняться в любом Telegram-чате.
      */
-    private function getClanForChat($message): ?Clan
+    private function getClanForLeader(TelegramUser $leader): ?Clan
     {
-        $chatId = (int) ($message->chat->id ?? 0);
-
-        if ($chatId === 0) {
-            return null;
-        }
-
         return Clan::query()
             ->active()
-            ->where('chat_id', $chatId)
+            ->where('creator_id', $leader->id)
             ->first();
     }
 
@@ -116,33 +122,15 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Находим клан текущего чата
+        | Находим отправителя команды
         |--------------------------------------------------------------------------
         */
-
-        $clan = $this->getClanForChat($message);
-
-        if (!$clan) {
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' =>
-                    '❌ Этот чат не зарегистрирован как чат клана.',
-            ]);
-
-            return;
-        }
 
         $telegramId = $message->from->id ?? null;
 
         if (!$telegramId) {
             return;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Находим TelegramUser главы
-        |--------------------------------------------------------------------------
-        */
 
         $leader = TelegramUser::query()
             ->where('telegram_id', $telegramId)
@@ -159,16 +147,16 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем, что пользователь является главой
-        | именно клана текущего чата
+        | Находим клан главы
         |--------------------------------------------------------------------------
         */
 
-        if ((int) $clan->creator_id !== (int) $leader->id) {
+        $clan = $this->getClanForLeader($leader);
+
+        if (!$clan) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    '❌ Вы не являетесь главой этого клана.',
+                'text' => '❌ Вы не являетесь главой активного клана.',
             ]);
 
             return;
@@ -256,8 +244,7 @@ class ClanModerationService
         if (!$targetUser) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    '❌ Этот пользователь ещё не зарегистрирован в боте.',
+                'text' => '❌ Этот пользователь ещё не зарегистрирован в боте.',
             ]);
 
             return;
@@ -265,7 +252,7 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем членство в клане текущего чата
+        | Проверяем членство цели в клане главы
         |--------------------------------------------------------------------------
         */
 
@@ -278,8 +265,7 @@ class ClanModerationService
         if (!$isClanMember) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    '❌ Пользователь не является участником вашего клана.',
+                'text' => '❌ Пользователь не является участником вашего клана.',
             ]);
 
             return;
@@ -297,15 +283,12 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Сохраняем мут
+        | Сохраняем мут в БД
         |--------------------------------------------------------------------------
         |
-        | Мут привязан к:
+        | Мут логически принадлежит клану главы.
         |
         | clan_id + user_id
-        |
-        | Поэтому мут одного пользователя в одном клане
-        | не влияет на его статус в другом клане.
         |
         */
 
@@ -326,11 +309,12 @@ class ClanModerationService
         |--------------------------------------------------------------------------
         |
         | ВАЖНО:
-        | используем $chatId, а не MAIN_CHAT_ID.
         |
-        | Поэтому Telegram ограничивает пользователя
-        | только в текущем чате.
+        | Здесь используется $chatId.
         |
+        | $chatId = тот чат, где была написана команда.
+        |
+        | Поэтому команду можно использовать в ЛЮБОМ чате.
         */
 
         try {
@@ -357,12 +341,14 @@ class ClanModerationService
 
                 'until_date' => $expiresAt->timestamp,
             ]);
-
         } catch (Throwable $e) {
             /*
             |--------------------------------------------------------------------------
             | Telegram mute не сработал
             |--------------------------------------------------------------------------
+            |
+            | Не оставляем в БД мут, если Telegram реально не смог
+            | ограничить пользователя.
             */
 
             ClanMute::query()
@@ -371,10 +357,11 @@ class ClanModerationService
                 ->delete();
 
             Log::error(
-                'Telegram clan chat mute failed',
+                'Telegram clan mute failed',
                 [
                     'clan_id' => $clan->id,
-                    'chat_id' => $chatId,
+                    'command_chat_id' => $chatId,
+                    'clan_chat_id' => $clan->chat_id ?? null,
                     'user_id' => $targetTelegramId,
                     'message' => $e->getMessage(),
                 ]
@@ -384,8 +371,8 @@ class ClanModerationService
                 'chat_id' => $chatId,
                 'text' =>
                     "❌ Не удалось выдать мут в этом чате.\n\n" .
-                    "Проверьте, что бот является администратором чата " .
-                    "и имеет право ограничивать участников.",
+                    "Проверьте, что бот является администратором " .
+                    "этого чата и имеет право ограничивать участников.",
             ]);
 
             return;
@@ -401,19 +388,19 @@ class ClanModerationService
             ? '@' . ltrim($targetUser->username, '@')
             : ($targetUser->first_name ?? 'пользователь');
 
-       $telegram->sendMessage([
-    'chat_id' => $chatId,
-    'text' =>
-        "🔇 <b><a href=\"tg://openmessage?user_id={$targetTelegramId}\">" .
-        $this->escapeHtml($username) .
-        "</a> получил(-а) мут</b>\n\n" .
-        "⏱ Срок: <b>{$this->escapeHtml($duration['label'])}</b>\n" .
-        "🕐 До: <b>" .
-        $expiresAt->format('d.m.Y H:i') .
-        "</b>\n\n" .
-        "📍 Мут действует только в этом чате.",
-    'parse_mode' => 'HTML',
-]);
+        $telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' =>
+                "🔇 <b><a href=\"tg://openmessage?user_id={$targetTelegramId}\">" .
+                $this->escapeHtml($username) .
+                "</a> получил(-а) мут</b>\n\n" .
+                "⏱ Срок: <b>{$this->escapeHtml($duration['label'])}</b>\n" .
+                "🕐 До: <b>" .
+                $expiresAt->format('d.m.Y H:i') .
+                "</b>\n\n" .
+                "📍 Мут действует только в этом чате.",
+            'parse_mode' => 'HTML',
+        ]);
     }
 
     /**
@@ -432,33 +419,15 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Находим клан текущего чата
+        | Находим отправителя
         |--------------------------------------------------------------------------
         */
-
-        $clan = $this->getClanForChat($message);
-
-        if (!$clan) {
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' =>
-                    '❌ Этот чат не зарегистрирован как чат клана.',
-            ]);
-
-            return;
-        }
 
         $telegramId = $message->from->id ?? null;
 
         if (!$telegramId) {
             return;
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Находим главу
-        |--------------------------------------------------------------------------
-        */
 
         $leader = TelegramUser::query()
             ->where('telegram_id', $telegramId)
@@ -475,16 +444,16 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем, что пользователь является главой
-        | именно текущего клана
+        | Находим клан главы
         |--------------------------------------------------------------------------
         */
 
-        if ((int) $clan->creator_id !== (int) $leader->id) {
+        $clan = $this->getClanForLeader($leader);
+
+        if (!$clan) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    '❌ Вы не являетесь главой этого клана.',
+                'text' => '❌ Вы не являетесь главой активного клана.',
             ]);
 
             return;
@@ -518,7 +487,7 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Нельзя снять собственный мут
+        | Нельзя изменить собственный мут
         |--------------------------------------------------------------------------
         */
 
@@ -544,8 +513,7 @@ class ClanModerationService
         if (!$targetUser) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    '❌ Пользователь не найден в базе бота.',
+                'text' => '❌ Пользователь не найден в базе бота.',
             ]);
 
             return;
@@ -553,7 +521,28 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Проверяем мут именно текущего клана
+        | Проверяем членство в клане
+        |--------------------------------------------------------------------------
+        */
+
+        $isClanMember = ClanMember::query()
+            ->where('clan_id', $clan->id)
+            ->where('user_id', $targetUser->id)
+            ->where('status', 'active')
+            ->exists();
+
+        if (!$isClanMember) {
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => '❌ Пользователь не является участником вашего клана.',
+            ]);
+
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Находим мут
         |--------------------------------------------------------------------------
         */
 
@@ -565,8 +554,7 @@ class ClanModerationService
         if (!$mute) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' =>
-                    'ℹ️ Пользователь сейчас не находится в муте.',
+                'text' => 'ℹ️ Пользователь сейчас не находится в муте.',
             ]);
 
             return;
@@ -574,8 +562,12 @@ class ClanModerationService
 
         /*
         |--------------------------------------------------------------------------
-        | Снимаем Telegram-мут ТОЛЬКО в текущем чате
+        | Снимаем Telegram-мут
         |--------------------------------------------------------------------------
+        |
+        | ВАЖНО:
+        | Снимаем ограничение именно в том чате,
+        | где была выполнена команда /mr.
         */
 
         try {
@@ -600,13 +592,13 @@ class ClanModerationService
                     'can_manage_topics' => false,
                 ]),
             ]);
-
         } catch (Throwable $e) {
             Log::error(
-                'Telegram clan chat unmute failed',
+                'Telegram clan unmute failed',
                 [
                     'clan_id' => $clan->id,
-                    'chat_id' => $chatId,
+                    'command_chat_id' => $chatId,
+                    'clan_chat_id' => $clan->chat_id ?? null,
                     'user_id' => $targetTelegramId,
                     'message' => $e->getMessage(),
                 ]
@@ -616,7 +608,8 @@ class ClanModerationService
                 'chat_id' => $chatId,
                 'text' =>
                     "❌ Не удалось снять мут в этом чате.\n\n" .
-                    "Проверьте права бота.",
+                    "Проверьте, что бот является администратором " .
+                    "этого чата и имеет необходимые права.",
             ]);
 
             return;
@@ -737,9 +730,13 @@ class ClanModerationService
     /**
      * Разбирает срок мута.
      *
+     * Поддерживается:
+     *
      * 10m
      * 1h
      * 1d
+     *
+     * Максимум 30 дней.
      */
     private function extractMuteDuration(
         $message,
