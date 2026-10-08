@@ -74,8 +74,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
             return;
         }
 
-        $encodedEntities = $this->encodeEntities();
-
         /*
         |--------------------------------------------------------------------------
         | Загружаем только пользователей этого batch
@@ -107,7 +105,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                 $sentMessages = $this->sendToRecipient(
                     telegram: $telegram,
                     recipient: $recipient,
-                    encodedEntities: $encodedEntities,
                 );
 
                 /*
@@ -132,8 +129,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Важно:
-                    |
                     | Один пользователь = одна запись delivery.
                     |
                     | Если sticker состоит из текста + sticker,
@@ -217,7 +212,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
     private function sendToRecipient(
         Api $telegram,
         TelegramUser $recipient,
-        string $encodedEntities,
     ): array {
         /*
         |--------------------------------------------------------------------------
@@ -242,6 +236,12 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
 
             $messages = [];
 
+            /*
+            |--------------------------------------------------------------------------
+            | Текст перед sticker
+            |--------------------------------------------------------------------------
+            */
+
             if ($this->chatText !== '') {
                 $messages[] = $telegram->sendMessage(
                     [
@@ -251,11 +251,23 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                         'text' =>
                             $this->chatText,
 
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ВАЖНО:
+                        | Передаём entities напрямую как массив.
+                        |--------------------------------------------------------------------------
+                        */
                         'entities' =>
-                            $encodedEntities,
+                            $this->entities,
                     ]
                 );
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Sticker
+            |--------------------------------------------------------------------------
+            */
 
             $messages[] = $telegram->sendSticker(
                 [
@@ -286,8 +298,16 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                         'text' =>
                             $this->chatText,
 
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ВАЖНО:
+                        | Не json_encode().
+                        |
+                        | Telegram получает настоящий массив entities.
+                        |--------------------------------------------------------------------------
+                        */
                         'entities' =>
-                            $encodedEntities,
+                            $this->entities,
                     ]
                 ),
             ];
@@ -314,8 +334,14 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
             $sendParams['caption'] =
                 $this->chatText;
 
+            /*
+            |--------------------------------------------------------------------------
+            | ВАЖНО:
+            | caption_entities тоже передаём массивом.
+            |--------------------------------------------------------------------------
+            */
             $sendParams['caption_entities'] =
-                $encodedEntities;
+                $this->entities;
         }
 
         return [
@@ -391,22 +417,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                     . $this->messageType
                 );
         }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Entities
-    |--------------------------------------------------------------------------
-    */
-
-    private function encodeEntities(): string
-    {
-        return json_encode(
-            $this->entities,
-            JSON_UNESCAPED_UNICODE
-            | JSON_UNESCAPED_SLASHES
-            | JSON_THROW_ON_ERROR
-        );
     }
 
     /*
