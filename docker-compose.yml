@@ -72,12 +72,76 @@ services:
     networks:
       - sus_lobby_network
 
-  worker:
+  # ============================================================
+  # TELEGRAM WORKER 1
+  # ============================================================
+
+  worker_telegram_1:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_worker
-    command: php artisan queue:work --queue=telegram,default --sleep=1 --tries=3 --timeout=120
+    container_name: sus_lobby_worker_telegram_1
+    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - sus_lobby_network
+
+  # ============================================================
+  # TELEGRAM WORKER 2
+  # ============================================================
+
+  worker_telegram_2:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: sus_lobby_worker_telegram_2
+    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - sus_lobby_network
+
+  # ============================================================
+  # TELEGRAM WORKER 3
+  # ============================================================
+
+  worker_telegram_3:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: sus_lobby_worker_telegram_3
+    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - sus_lobby_network
+
+  # ============================================================
+  # DEFAULT WORKER
+  # ============================================================
+
+  worker_default:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: sus_lobby_worker_default
+    command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
     volumes:
