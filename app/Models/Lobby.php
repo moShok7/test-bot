@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Lobby extends Model
 {
     protected $fillable = [
+        'clan_id',
         'creator_id',
         'game_room_code',
         'status',
@@ -27,8 +28,10 @@ protected $casts = [
         );
     }
 
-
-
+    public function clan()
+{
+    return $this->belongsTo(Clan::class);
+}
     public function creator()
     {
         return $this->belongsTo(
