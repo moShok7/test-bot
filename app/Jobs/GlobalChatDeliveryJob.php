@@ -9,6 +9,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class GlobalChatDeliveryJob implements ShouldQueue
 {
@@ -18,36 +19,40 @@ class GlobalChatDeliveryJob implements ShouldQueue
     use SerializesModels;
 
     /**
-     * Количество попыток.
+     * Максимальное количество попыток.
      */
     public int $tries = 3;
 
     /**
-     * Максимальное время выполнения.
+     * Максимальное время выполнения задачи.
      */
     public int $timeout = 120;
 
     /**
-     * Задержки повторных попыток.
+     * Задержки перед повторными попытками.
      */
     public function backoff(): array
     {
         return [5, 15, 30];
     }
 
+    /**
+     * Данные сообщения.
+     */
     public function __construct(
         public int $chatMessageId,
         public ?int $replyToChatMessageId,
         public int $authorTelegramId,
         public string $chatText,
         public array $entities,
-        public string $messageType = 'text',
-        public ?string $mediaFileId = null,
+        public string $messageType,
+        public ?string $mediaFileId,
     ) {
+        $this->onQueue('telegram');
     }
 
     /**
-     * Создаём отдельные BatchJob по 50 пользователей.
+     * Формируем и отправляем задачи пакетной рассылки.
      */
     public function handle(): void
     {
@@ -57,84 +62,100 @@ class GlobalChatDeliveryJob implements ShouldQueue
             'GlobalChatDeliveryJob START',
             [
                 'chatMessageId' => $this->chatMessageId,
-                'replyToChatMessageId' => $this->replyToChatMessageId,
                 'authorTelegramId' => $this->authorTelegramId,
                 'messageType' => $this->messageType,
-                'mediaFileId' => $this->mediaFileId,
             ]
         );
 
-        $batches = 0;
-        $users = 0;
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | Выбираем получателей
+            |--------------------------------------------------------------------------
+            |
+            | telegram_id — Telegram ID пользователя.
+            | id — внутренний ID пользователя в БД.
+            |--------------------------------------------------------------------------
+            */
 
-        TelegramUser::query()
-            ->where(
-                'telegram_id',
-                '!=',
-                $this->authorTelegramId
-            )
-            ->where(
-                'chat_notifications',
-                true
-            )
-            ->orderBy('id')
-            ->chunkById(
-                50,
-                function ($recipients) use (&$batches, &$users): void {
-                    $telegramUserIds = $recipients
-                        ->pluck('telegram_id')
-                        ->map(
-                            fn ($id) => (int) $id
-                        )
-                        ->values()
-                        ->all();
+            $telegramUserIds = TelegramUser::query()
+                ->where('chat_notifications', true)
+                ->where('telegram_id', '!=', $this->authorTelegramId)
+                ->orderBy('id')
+                ->pluck('telegram_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
 
-                    if (empty($telegramUserIds)) {
-                        return;
-                    }
+            if (empty($telegramUserIds)) {
+                Log::info(
+                    'GlobalChatDeliveryJob EMPTY',
+                    [
+                        'chatMessageId' => $this->chatMessageId,
+                    ]
+                );
 
-                    $count = count($telegramUserIds);
+                return;
+            }
 
-                    $users += $count;
-                    $batches++;
+            /*
+            |--------------------------------------------------------------------------
+            | Разбиваем получателей на пакеты по 50
+            |--------------------------------------------------------------------------
+            */
 
-                    GlobalChatDeliveryBatchJob::dispatch(
-                        chatMessageId: $this->chatMessageId,
-                        replyToChatMessageId: $this->replyToChatMessageId,
-                        authorTelegramId: $this->authorTelegramId,
-                        chatText: $this->chatText,
-                        entities: $this->entities,
-                        messageType: $this->messageType,
-                        mediaFileId: $this->mediaFileId,
-                        telegramUserIds: $telegramUserIds,
-                    )->onQueue('telegram');
+            $batches = array_chunk($telegramUserIds, 50);
 
-                    Log::info(
-                        'GlobalChatDeliveryBatchJob DISPATCHED',
-                        [
-                            'chatMessageId' => $this->chatMessageId,
-                            'batch' => $batches,
-                            'users' => $count,
-                            'messageType' => $this->messageType,
-                        ]
-                    );
-                }
+            $dispatched = 0;
+
+            foreach ($batches as $index => $userIds) {
+                GlobalChatDeliveryBatchJob::dispatch(
+                    chatMessageId: $this->chatMessageId,
+                    replyToChatMessageId: $this->replyToChatMessageId,
+                    authorTelegramId: $this->authorTelegramId,
+                    chatText: $this->chatText,
+                    entities: $this->entities,
+                    messageType: $this->messageType,
+                    mediaFileId: $this->mediaFileId,
+                    telegramUserIds: $userIds,
+                )->onQueue('telegram');
+
+                $dispatched++;
+
+                Log::info(
+                    'GlobalChatDeliveryBatchJob DISPATCHED',
+                    [
+                        'chatMessageId' => $this->chatMessageId,
+                        'batch' => $index + 1,
+                        'recipients' => count($userIds),
+                    ]
+                );
+            }
+
+            Log::info(
+                'GlobalChatDeliveryJob DONE',
+                [
+                    'chatMessageId' => $this->chatMessageId,
+                    'recipients' => count($telegramUserIds),
+                    'batches' => $dispatched,
+                    'duration' => round(
+                        microtime(true) - $startedAt,
+                        3
+                    ),
+                ]
+            );
+        } catch (Throwable $e) {
+            Log::error(
+                'GlobalChatDeliveryJob ERROR',
+                [
+                    'chatMessageId' => $this->chatMessageId,
+                    'error' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
             );
 
-        $duration = round(
-            microtime(true) - $startedAt,
-            3
-        );
-
-        Log::info(
-            'GlobalChatDeliveryJob DONE',
-            [
-                'chatMessageId' => $this->chatMessageId,
-                'batches' => $batches,
-                'users' => $users,
-                'messageType' => $this->messageType,
-                'duration' => $duration,
-            ]
-        );
+            throw $e;
+        }
     }
 }
