@@ -10,9 +10,6 @@ return new class extends Migration
     {
         Schema::table('lobby_notifications', function (Blueprint $table) {
             $table->unsignedBigInteger('telegram_user_id')->nullable()->change();
-
-            $table->string('chat_id')->nullable()->after('telegram_user_id');
-            $table->string('chat_type')->nullable()->after('chat_id');
         });
     }
 
