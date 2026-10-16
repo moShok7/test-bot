@@ -7,710 +7,436 @@ use App\Models\BotGroup;
 use App\Models\ChatMessage;
 use App\Models\ChatMessageDelivery;
 use App\Models\TelegramUser;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
+use Throwable;
 
 class GlobalChatHandler
 {
     /**
-     * Обрабатывает сообщение глобального чата.
+     * Обработка сообщений глобального чата.
      */
     public function handle($message, Api $telegram): bool
     {
-        /*
-        |--------------------------------------------------------------------------
-        | ВАЖНО:
-        | Глобальный чат работает ТОЛЬКО из личной переписки с ботом.
-        |
-        | Сообщения из:
-        | - group
-        | - supergroup
-        | - channel
-        |
-        | полностью игнорируются.
-        |--------------------------------------------------------------------------
-        */
+        try {
+            $chat = $message->getChat();
 
-        $chatType = $message->chat->type ?? null;
-        $chatId = $message->chat->id ?? null;
-            if ($chatType === 'group' || $chatType === 'supergroup') {
-        if ($chatId) {
-            BotGroup::updateOrCreate(
+            if (!$chat) {
+                return false;
+            }
+
+            $chatId = (int) $chat->getId();
+            $chatType = $chat->getType();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Регистрация групп
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $chatType === 'group'
+                || $chatType === 'supergroup'
+            ) {
+                try {
+                    BotGroup::updateOrCreate(
+                        ['chat_id' => $chatId],
+                        [
+                            'title' => $chat->getTitle(),
+                            'type' => $chatType,
+                            'is_active' => true,
+                        ]
+                    );
+                } catch (Throwable $e) {
+                    Log::warning(
+                        'GlobalChat: failed to register group',
+                        [
+                            'chat_id' => $chatId,
+                            'error' => $e->getMessage(),
+                        ]
+                    );
+                }
+
+                return false;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Глобальный чат работает только в личных сообщениях
+            |--------------------------------------------------------------------------
+            */
+
+            if ($chatType !== 'private') {
+                return false;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Тип сообщения
+            |--------------------------------------------------------------------------
+            */
+
+            $messageType = $this->detectMessageType($message);
+
+            if ($messageType === null) {
+                return false;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Автор
+            |--------------------------------------------------------------------------
+            */
+
+            $from = $message->getFrom();
+
+            if (!$from) {
+                return false;
+            }
+
+            $telegramUserId = (int) $from->getId();
+
+            $firstName = trim(
+                (string) ($from->getFirstName() ?? '')
+            );
+
+            $lastName = trim(
+                (string) ($from->getLastName() ?? '')
+            );
+
+            $username = $from->getUsername();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Пользователь
+            |--------------------------------------------------------------------------
+            */
+
+            $telegramUser = TelegramUser::updateOrCreate(
                 [
-                    'chat_id' => $chatId,
+                    'telegram_id' => $telegramUserId,
                 ],
                 [
-                    'title' => $message->chat->title ?? null,
-                    'type' => $chatType,
-                    'is_active' => true,
+                    'username' => $username,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
                 ]
             );
-        }
 
-        return false;
-    }
+            /*
+            |--------------------------------------------------------------------------
+            | Текст или подпись к медиа
+            |--------------------------------------------------------------------------
+            */
 
-    /*
-     * Каналы тоже игнорируем.
-     */
-    if ($chatType !== 'private') {
-        return false;
-    }
+            $text = $message->getText();
 
+            if ($text === null) {
+                $text = $message->getCaption();
+            }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Определяем тип сообщения
-        |--------------------------------------------------------------------------
-        */
+            $text = (string) ($text ?? '');
 
-        $messageType = $this->detectMessageType($message);
+            /*
+            |--------------------------------------------------------------------------
+            | Идентификатор медиа
+            |--------------------------------------------------------------------------
+            */
 
-        if ($messageType === null) {
-            return false;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Telegram ID автора
-        |--------------------------------------------------------------------------
-        */
-
-        $telegramUserId = $message->from->id ?? null;
-
-        if (!$telegramUserId) {
-            return false;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Данные автора
-        |--------------------------------------------------------------------------
-        */
-
-        $firstName = trim(
-            (string) ($message->from->first_name ?? '')
-        );
-
-        if ($firstName === '') {
-            $firstName = 'Пользователь';
-        }
-
-        $username = $message->from->username ?? null;
-
-        $lastName = $message->from->last_name ?? null;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Создаём / обновляем пользователя
-        |--------------------------------------------------------------------------
-        */
-
-        $user = TelegramUser::updateOrCreate(
-            [
-                'telegram_id' => $telegramUserId,
-            ],
-            [
-                'username' => $username,
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-            ]
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Текст / caption
-        |--------------------------------------------------------------------------
-        */
-
-        $text = trim(
-            (string) ($message->text ?? '')
-        );
-
-        /*
-         * Для media берём caption.
-         */
-        if ($messageType !== 'text') {
-            $text = trim(
-                (string) ($message->caption ?? '')
+            $mediaFileId = $this->getMediaFileId(
+                $message,
+                $messageType
             );
-        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Сохраняем сообщение
-        |--------------------------------------------------------------------------
-        */
+            /*
+            |--------------------------------------------------------------------------
+            | Reply: ищем исходное сообщение по delivery
+            |--------------------------------------------------------------------------
+            |
+            | telegram_message_id — ID сообщения в Telegram,
+            | telegram_user_id — внутренний ID пользователя БД.
+            |--------------------------------------------------------------------------
+            */
 
-        $chatMessage = ChatMessage::create([
-            'telegram_user_id' => $user->id,
-            'message' => $text,
-        ]);
+            $replyToChatMessage = null;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Получаем file_id
-        |--------------------------------------------------------------------------
-        */
+            $replyMessage = $message->getReplyToMessage();
 
-        $mediaFileId = $this->getMediaFileId(
-            $message,
-            $messageType
-        );
+            if ($replyMessage) {
+                $replyTelegramMessageId = (int)
+                    $replyMessage->getMessageId();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Проверяем Reply
-        |--------------------------------------------------------------------------
-        */
-
-        $replyToTelegramMessageId =
-            $message->reply_to_message->message_id
-            ?? null;
-
-        $replyToChatMessage = null;
-
-        if ($replyToTelegramMessageId) {
-            $replyDelivery =
-                ChatMessageDelivery::query()
-                    ->where(
-                        'telegram_user_id',
-                        $user->id
-                    )
+                $delivery = ChatMessageDelivery::query()
                     ->where(
                         'telegram_message_id',
-                        $replyToTelegramMessageId
+                        $replyTelegramMessageId
+                    )
+                    ->where(
+                        'telegram_user_id',
+                        $telegramUser->id
                     )
                     ->first();
 
-            if ($replyDelivery) {
-                $replyToChatMessage =
-                    ChatMessage::find(
-                        $replyDelivery->chat_message_id
+                if ($delivery) {
+                    $replyToChatMessage = ChatMessage::find(
+                        $delivery->chat_message_id
                     );
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Упоминания
-        |--------------------------------------------------------------------------
-        */
-
-        $mentionedUsers =
-            $this->findMentionedUsers($text);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Имя автора
-        |--------------------------------------------------------------------------
-        */
-
-        $authorName = $firstName;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Формируем текст и Telegram entities
-        |--------------------------------------------------------------------------
-        */
-
-        $chatText = '';
-
-        $entities = [];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Автор
-        |--------------------------------------------------------------------------
-        */
-
-        $authorStartOffset =
-            $this->utf16Length($chatText);
-
-        $chatText .= $authorName;
-
-        $authorLength =
-            $this->utf16Length($authorName);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Кликабельный профиль автора
-        |--------------------------------------------------------------------------
-        */
-
-        $entities[] = [
-            'type' => 'text_mention',
-
-            'offset' =>
-                $authorStartOffset,
-
-            'length' =>
-                $authorLength,
-
-            'user' => [
-                'id' =>
-                    (int) $telegramUserId,
-            ],
-        ];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Жирное имя автора
-        |--------------------------------------------------------------------------
-        */
-
-        $entities[] = [
-            'type' => 'bold',
-
-            'offset' =>
-                $authorStartOffset,
-
-            'length' =>
-                $authorLength,
-        ];
-
-        /*
-        |--------------------------------------------------------------------------
-        | Новая строка
-        |--------------------------------------------------------------------------
-        */
-
-        $chatText .= "\n";
-
-        /*
-        |--------------------------------------------------------------------------
-        | Иконка + сообщение
-        |--------------------------------------------------------------------------
-        */
-
-        $chatText .=
-            ($user->chat_icon ?? '🟠')
-            . ': ';
-
-        /*
-        |--------------------------------------------------------------------------
-        | Позиция начала пользовательского текста
-        |--------------------------------------------------------------------------
-        */
-
-        $messageTextStartOffset =
-            $this->utf16Length($chatText);
-
-        $chatText .= $text;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Создаём настоящие Telegram text_mention
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($mentionedUsers as $mentionedUser) {
-            if (
-                !$mentionedUser->username
-                || !$mentionedUser->telegram_id
-            ) {
-                continue;
+                }
             }
 
             /*
-            |----------------------------------------------------------------------
-            | Ищем все вхождения username
-            |----------------------------------------------------------------------
+            |--------------------------------------------------------------------------
+            | Сохраняем сообщение в существующую схему БД
+            |--------------------------------------------------------------------------
+            |
+            | В chat_messages сейчас существуют только:
+            | id, telegram_user_id, message, created_at, updated_at.
+            |
+            | Поэтому не записываем telegram_message_id,
+            | message_type и file_id в несуществующие столбцы.
+            |--------------------------------------------------------------------------
             */
 
-            preg_match_all(
-                '/(?<![a-zA-Z0-9_])@'
-                . preg_quote(
-                    $mentionedUser->username,
-                    '/'
-                )
-                . '(?![a-zA-Z0-9_])/iu',
-                $text,
-                $matches,
-                PREG_OFFSET_CAPTURE
+            $storedMessage = $text !== ''
+                ? $text
+                : '[' . $messageType . ']';
+
+            $chatMessage = ChatMessage::create(
+                [
+                    'telegram_user_id' => $telegramUser->id,
+                    'message' => $storedMessage,
+                ]
             );
 
-            if (empty($matches[0])) {
-                continue;
+            /*
+            |--------------------------------------------------------------------------
+            | Собираем сообщение для рассылки
+            |--------------------------------------------------------------------------
+            */
+
+            $chatText = '';
+            $entities = [];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Блок ответа
+            |--------------------------------------------------------------------------
+            */
+
+            if ($replyToChatMessage) {
+                $replyAuthor = TelegramUser::find(
+                    $replyToChatMessage->telegram_user_id
+                );
+
+                if ($replyAuthor) {
+                    $replyAuthorName = trim(
+                        (string) $replyAuthor->first_name
+                    );
+
+                    if ($replyAuthorName === '') {
+                        $replyAuthorName = 'Пользователь';
+                    }
+
+                    $replyText = trim(
+                        (string) $replyToChatMessage->message
+                    );
+
+                    if ($replyText === '') {
+                        $replyText = 'Сообщение';
+                    }
+
+                    $replyPrefix = '↩️ ';
+
+                    $authorOffset = $this->utf16Length(
+                        $replyPrefix
+                    );
+
+                    $authorLength = $this->utf16Length(
+                        $replyAuthorName
+                    );
+
+                    $chatText .=
+                        $replyPrefix
+                        . $replyAuthorName
+                        . "\n"
+                        . $replyText
+                        . "\n\n";
+
+                    $entities[] = [
+                        'type' => 'text_link',
+                        'offset' => $authorOffset,
+                        'length' => $authorLength,
+                        'url' => 'tg://openmessage?user_id='
+                            . (int) $replyAuthor->telegram_id,
+                    ];
+
+                    $entities[] = [
+                        'type' => 'bold',
+                        'offset' => $authorOffset,
+                        'length' => $authorLength,
+                    ];
+                }
             }
 
-            foreach ($matches[0] as $match) {
-                $matchedText = $match[0];
+            /*
+            |--------------------------------------------------------------------------
+            | Имя автора
+            |--------------------------------------------------------------------------
+            */
 
-                $byteOffset = $match[1];
+            $authorName = $firstName !== ''
+                ? $firstName
+                : 'Пользователь';
 
-                /*
-                |------------------------------------------------------------------
-                | Текст до @username
-                |------------------------------------------------------------------
-                */
+            $authorOffset = $this->utf16Length($chatText);
+            $authorLength = $this->utf16Length($authorName);
 
-                $textBeforeMention =
-                    substr(
+            $chatText .= $authorName;
+
+            $entities[] = [
+                'type' => 'text_link',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
+                'url' => 'tg://openmessage?user_id='
+                    . $telegramUserId,
+            ];
+
+            $entities[] = [
+                'type' => 'bold',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
+            ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Иконка пользователя и текст
+            |--------------------------------------------------------------------------
+            */
+
+            $chatText .= "\n";
+
+            $icon = $telegramUser->chat_icon ?: '🟠';
+
+            $chatText .= $icon . ': ';
+
+            $textStartOffset = $this->utf16Length($chatText);
+
+            $chatText .= $text;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Упоминания @username
+            |--------------------------------------------------------------------------
+            */
+
+            if ($text !== '') {
+                $mentionedUsers = $this->findMentionedUsers($text);
+
+                foreach ($mentionedUsers as $mention) {
+                    $mentionedUser = $mention['user'];
+
+                    $beforeMention = mb_substr(
                         $text,
                         0,
-                        $byteOffset
+                        $mention['offset'],
+                        'UTF-8'
                     );
 
-                /*
-                |------------------------------------------------------------------
-                | UTF-16 offset
-                |------------------------------------------------------------------
-                */
-
-                $mentionOffset =
-                    $messageTextStartOffset
-                    + $this->utf16Length(
-                        $textBeforeMention
+                    $mentionValue = mb_substr(
+                        $text,
+                        $mention['offset'],
+                        $mention['length'],
+                        'UTF-8'
                     );
 
-                $mentionLength =
-                    $this->utf16Length(
-                        $matchedText
-                    );
-
-                /*
-                |------------------------------------------------------------------
-                | text_mention
-                |------------------------------------------------------------------
-                */
-
-                $entities[] = [
-                    'type' =>
-                        'text_mention',
-
-                    'offset' =>
-                        $mentionOffset,
-
-                    'length' =>
-                        $mentionLength,
-
-                    'user' => [
-                        'id' =>
-                            (int) $mentionedUser->telegram_id,
-                    ],
-                ];
+                    $entities[] = [
+                        'type' => 'text_link',
+                        'offset' => $textStartOffset
+                            + $this->utf16Length($beforeMention),
+                        'length' => $this->utf16Length($mentionValue),
+                        'url' => 'tg://openmessage?user_id='
+                            . (int) $mentionedUser->telegram_id,
+                    ];
+                }
             }
-        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Reply
-        |--------------------------------------------------------------------------
-        */
-
-        if ($replyToChatMessage) {
             /*
-             * Автор оригинального сообщения.
-             */
+            |--------------------------------------------------------------------------
+            | Отправляем задачу в очередь telegram
+            |--------------------------------------------------------------------------
+            */
 
-            $replyAuthor =
-                $replyToChatMessage->user;
-
-            if ($replyAuthor) {
-                /*
-                |--------------------------------------------------------------------------
-                | Имя автора Reply
-                |--------------------------------------------------------------------------
-                */
-
-                $replyUsername =
-                    trim(
-                        (string) (
-                            $replyAuthor->first_name
-                            ?? ''
-                        )
-                    );
-
-                if ($replyUsername === '') {
-                    $replyUsername = 'Пользователь';
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Текст оригинального сообщения
-                |--------------------------------------------------------------------------
-                */
-
-                $replyText =
-                    $replyToChatMessage->message;
-
-                /*
-                |--------------------------------------------------------------------------
-                | Если media был без caption
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    trim((string) $replyText)
-                    === ''
-                ) {
-                    $replyText =
-                        $this->getReplyMediaText(
-                            $replyToTelegramMessageId
-                        );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Ограничение цитаты
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    mb_strlen(
-                        $replyText
-                    ) > 200
-                ) {
-                    $replyText =
-                        mb_substr(
-                            $replyText,
-                            0,
-                            200
-                        )
-                        . '...';
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | Формируем Reply block
-                |--------------------------------------------------------------------------
-                */
-
-                $replyBlock =
-                    '↩️ '
-                    . $replyUsername
-                    . "\n"
-                    . $replyText
-                    . "\n\n";
-
-                /*
-                |--------------------------------------------------------------------------
-                | Reply должен быть в начале
-                |--------------------------------------------------------------------------
-                */
-
-                $oldChatText =
-                    $chatText;
-
-                $chatText =
-                    $replyBlock
-                    . $oldChatText;
-
-                /*
-                |--------------------------------------------------------------------------
-                | Все существующие entities сдвигаем вправо
-                |--------------------------------------------------------------------------
-                */
-
-                $replyOffset =
-                    $this->utf16Length(
-                        $replyBlock
-                    );
-
-                foreach ($entities as &$entity) {
-                    $entity['offset'] +=
-                        $replyOffset;
-                }
-
-                unset($entity);
-
-                /*
-                |--------------------------------------------------------------------------
-                | Telegram ID автора Reply
-                |--------------------------------------------------------------------------
-                */
-
-                $replyAuthorTelegramId =
-                    $replyAuthor->telegram_id
-                    ?? null;
-
-                /*
-                |--------------------------------------------------------------------------
-                | Entity автора Reply
-                |--------------------------------------------------------------------------
-                */
-
-                if ($replyAuthorTelegramId) {
-                    $replyAuthorStartOffset =
-                        $this->utf16Length(
-                            '↩️ '
-                        );
-
-                    $replyAuthorLength =
-                        $this->utf16Length(
-                            $replyUsername
-                        );
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Кликабельный профиль Reply автора
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $entities[] = [
-                        'type' =>
-                            'text_mention',
-
-                        'offset' =>
-                            $replyAuthorStartOffset,
-
-                        'length' =>
-                            $replyAuthorLength,
-
-                        'user' => [
-                            'id' =>
-                                (int) $replyAuthorTelegramId,
-                        ],
-                    ];
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Жирное имя Reply автора
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $entities[] = [
-                        'type' =>
-                            'bold',
-
-                        'offset' =>
-                            $replyAuthorStartOffset,
-
-                        'length' =>
-                            $replyAuthorLength,
-                    ];
-                }
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Лог
-        |--------------------------------------------------------------------------
-        */
-
-        Log::info(
-            'BEFORE GlobalChatDeliveryJob dispatch',
-            [
-                'chatMessageId' =>
-                    $chatMessage->id,
-
-                'authorTelegramId' =>
-                    $telegramUserId,
-
-                'authorName' =>
-                    $authorName,
-
-                'username' =>
-                    $username,
-
-                'firstName' =>
-                    $firstName,
-
-                'messageType' =>
-                    $messageType,
-
-                'mediaFileId' =>
-                    $mediaFileId,
-
-                'replyToChatMessageId' =>
-                    $replyToChatMessage
-                        ? $replyToChatMessage->id
-                        : null,
-
-                'chatText' =>
-                    $chatText,
-
-                'entities' =>
-                    $entities,
-            ]
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Отправляем Job
-        |--------------------------------------------------------------------------
-        */
-
-        GlobalChatDeliveryJob::dispatch(
-            chatMessageId:
-                $chatMessage->id,
-
-            replyToChatMessageId:
-                $replyToChatMessage
+            GlobalChatDeliveryJob::dispatch(
+                chatMessageId: $chatMessage->id,
+                replyToChatMessageId: $replyToChatMessage
                     ? $replyToChatMessage->id
                     : null,
+                authorTelegramId: $telegramUserId,
+                chatText: $chatText,
+                entities: $entities,
+                messageType: $messageType,
+                mediaFileId: $mediaFileId,
+            )->onQueue('telegram');
 
-            authorTelegramId:
-                (int) $telegramUserId,
+            Log::info(
+                'GlobalChatDeliveryJob DISPATCHED FROM HANDLER',
+                [
+                    'chatMessageId' => $chatMessage->id,
+                    'authorTelegramId' => $telegramUserId,
+                    'messageType' => $messageType,
+                    'hasMediaFileId' => $mediaFileId !== null,
+                ]
+            );
 
-            chatText:
-                $chatText,
+            return true;
+        } catch (Throwable $e) {
+            Log::error(
+                'GlobalChatHandler error',
+                [
+                    'error' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
+            );
 
-            entities:
-                $entities,
-
-            messageType:
-                $messageType,
-
-            mediaFileId:
-                $mediaFileId,
-        )->onQueue('telegram');
-
-        /*
-        |--------------------------------------------------------------------------
-        | Лог
-        |--------------------------------------------------------------------------
-        */
-
-        Log::info(
-            'AFTER GlobalChatDeliveryJob dispatch',
-            [
-                'chatMessageId' =>
-                    $chatMessage->id,
-            ]
-        );
-
-        return true;
+            return false;
+        }
     }
 
     /**
-     * Определяем тип сообщения.
+     * Определяет тип сообщения.
      */
-    private function detectMessageType(
-        $message
-    ): ?string {
-        if (!empty($message->text)) {
+    private function detectMessageType($message): ?string
+    {
+        if ($message->getText() !== null) {
             return 'text';
         }
 
-        if (!empty($message->sticker)) {
+        if ($message->getSticker() !== null) {
             return 'sticker';
         }
 
-        if (!empty($message->animation)) {
+        if ($message->getAnimation() !== null) {
             return 'animation';
         }
 
-        if (!empty($message->voice)) {
+        if ($message->getVoice() !== null) {
             return 'voice';
         }
 
-        if (!empty($message->video)) {
+        if ($message->getVideo() !== null) {
             return 'video';
         }
 
-        if (!empty($message->photo)) {
+        if ($message->getPhoto() !== null) {
             return 'photo';
         }
 
-        if (!empty($message->audio)) {
+        if ($message->getAudio() !== null) {
             return 'audio';
         }
 
-        if (!empty($message->document)) {
+        if ($message->getDocument() !== null) {
             return 'document';
         }
 
@@ -718,136 +444,148 @@ class GlobalChatHandler
     }
 
     /**
-     * Получаем file_id.
+     * Получает file_id медиа.
      */
     private function getMediaFileId(
         $message,
-        string $messageType
+        ?string $messageType
     ): ?string {
+        if ($messageType === null) {
+            return null;
+        }
+
         switch ($messageType) {
             case 'sticker':
-                return $message->sticker->file_id
-                    ?? null;
+                $media = $message->getSticker();
+                break;
 
             case 'animation':
-                return $message->animation->file_id
-                    ?? null;
+                $media = $message->getAnimation();
+                break;
 
             case 'voice':
-                return $message->voice->file_id
-                    ?? null;
+                $media = $message->getVoice();
+                break;
 
             case 'video':
-                return $message->video->file_id
-                    ?? null;
-
-            case 'audio':
-                return $message->audio->file_id
-                    ?? null;
-
-            case 'document':
-                return $message->document->file_id
-                    ?? null;
+                $media = $message->getVideo();
+                break;
 
             case 'photo':
-                if (!empty($message->photo)) {
-                    $photos =
-                        $message->photo;
+                $photos = $message->getPhoto();
 
-                    $lastPhoto =
-                        $photos[
-                            count($photos) - 1
-                        ];
-
-                    return $lastPhoto->file_id
-                        ?? null;
+                if (!$photos || count($photos) === 0) {
+                    return null;
                 }
 
+                $largestPhoto = null;
+                $largestSize = -1;
+
+                foreach ($photos as $photo) {
+                    $fileSize = (int) (
+                        $photo->getFileSize() ?? 0
+                    );
+
+                    if ($fileSize >= $largestSize) {
+                        $largestSize = $fileSize;
+                        $largestPhoto = $photo;
+                    }
+                }
+
+                return $largestPhoto
+                    ? $largestPhoto->getFileId()
+                    : null;
+
+            case 'audio':
+                $media = $message->getAudio();
+                break;
+
+            case 'document':
+                $media = $message->getDocument();
+                break;
+
+            default:
                 return null;
         }
 
-        return null;
+        return $media ? $media->getFileId() : null;
     }
 
     /**
-     * Находит пользователей,
-     * которых упомянули.
+     * Ищет пользователей по @username.
      */
-    private function findMentionedUsers(
-        string $text
-    ) {
+    private function findMentionedUsers(string $text): array
+    {
         preg_match_all(
-            '/(?<![a-zA-Z0-9_])@([a-zA-Z0-9_]{1,32})(?![a-zA-Z0-9_])/u',
+            '/@([a-zA-Z0-9_]{5,32})/u',
             $text,
-            $matches
+            $matches,
+            PREG_OFFSET_CAPTURE
         );
 
         if (empty($matches[1])) {
-            return collect();
+            return [];
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Уникальные usernames
-        |--------------------------------------------------------------------------
-        */
+        $result = [];
 
-        $usernames = [];
+        foreach ($matches[1] as $match) {
+            $username = $match[0];
+            $byteOffset = $match[1];
 
-        foreach ($matches[1] as $username) {
-            $usernames[
-                strtolower($username)
-            ] = $username;
-        }
+            $before = substr($text, 0, $byteOffset);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Ищем пользователей в БД
-        |--------------------------------------------------------------------------
-        */
-
-        return TelegramUser::query()
-            ->whereNotNull('username')
-            ->whereIn(
-                DB::raw('LOWER(username)'),
-                array_keys($usernames)
-            )
-            ->get();
-    }
-
-    /**
-     * Возвращает длину строки
-     * в UTF-16 code units.
-     */
-    private function utf16Length(
-        string $text
-    ): int {
-        $utf16 =
-            mb_convert_encoding(
-                $text,
-                'UTF-16LE',
+            $characterOffset = mb_strlen(
+                $before,
                 'UTF-8'
             );
 
-        return intdiv(
-            strlen($utf16),
-            2
-        );
+            $user = TelegramUser::query()
+                ->whereRaw(
+                    'LOWER(username) = ?',
+                    [
+                        mb_strtolower(
+                            $username,
+                            'UTF-8'
+                        ),
+                    ]
+                )
+                ->first();
+
+            if (!$user) {
+                continue;
+            }
+
+            $result[] = [
+                'user' => $user,
+                'offset' => $characterOffset,
+                'length' => mb_strlen(
+                    '@' . $username,
+                    'UTF-8'
+                ),
+            ];
+        }
+
+        return $result;
     }
 
     /**
-     * Текст для Reply на media.
-     *
-     * Сам media уже хранится/отправляется
-     * отдельно через Job.
+     * Telegram использует UTF-16 offsets для entities.
      */
-    private function getReplyMediaText(
-        ?int $telegramMessageId
-    ): string {
-        if (!$telegramMessageId) {
-            return 'Сообщение';
+    private function utf16Length(string $text): int
+    {
+        if ($text === '') {
+            return 0;
         }
 
-        return 'Сообщение';
+        return (int) (
+            strlen(
+                mb_convert_encoding(
+                    $text,
+                    'UTF-16LE',
+                    'UTF-8'
+                )
+            ) / 2
+        );
     }
 }

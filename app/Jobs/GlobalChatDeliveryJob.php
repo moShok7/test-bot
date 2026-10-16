@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Models\ChatMessageDelivery;
 use App\Models\TelegramUser;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -10,7 +9,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
-use Telegram\Bot\Api;
 use Throwable;
 
 class GlobalChatDeliveryJob implements ShouldQueue
@@ -20,441 +18,144 @@ class GlobalChatDeliveryJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    /**
+     * Максимальное количество попыток.
+     */
     public int $tries = 3;
 
+    /**
+     * Максимальное время выполнения задачи.
+     */
     public int $timeout = 120;
 
+    /**
+     * Задержки перед повторными попытками.
+     */
     public function backoff(): array
     {
         return [5, 15, 30];
     }
 
+    /**
+     * Данные сообщения.
+     */
     public function __construct(
         public int $chatMessageId,
         public ?int $replyToChatMessageId,
         public int $authorTelegramId,
         public string $chatText,
         public array $entities,
-        public string $messageType = 'text',
-        public ?string $mediaFileId = null,
+        public string $messageType,
+        public ?string $mediaFileId,
     ) {
+        $this->onQueue('telegram');
     }
 
-    public function handle(Api $telegram): void
+    /**
+     * Формируем и отправляем задачи пакетной рассылки.
+     */
+    public function handle(): void
     {
+        $startedAt = microtime(true);
+
         Log::info(
             'GlobalChatDeliveryJob START',
             [
-                'chatMessageId' =>
-                    $this->chatMessageId,
-
-                'replyToChatMessageId' =>
-                    $this->replyToChatMessageId,
-
-                'authorTelegramId' =>
-                    $this->authorTelegramId,
-
-                'messageType' =>
-                    $this->messageType,
-
-                'mediaFileId' =>
-                    $this->mediaFileId,
-
-                'entities' =>
-                    $this->entities,
+                'chatMessageId' => $this->chatMessageId,
+                'authorTelegramId' => $this->authorTelegramId,
+                'messageType' => $this->messageType,
             ]
         );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Telegram entities
-        |--------------------------------------------------------------------------
-        |
-        | Telegram Bot API ожидает entities как JSON-serialized array.
-        |
-        */
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | Выбираем получателей
+            |--------------------------------------------------------------------------
+            |
+            | telegram_id — Telegram ID пользователя.
+            | id — внутренний ID пользователя в БД.
+            |--------------------------------------------------------------------------
+            */
 
-        $encodedEntities = $this->encodeEntities();
+            $telegramUserIds = TelegramUser::query()
+                ->where('chat_notifications', true)
+                ->where('telegram_id', '!=', $this->authorTelegramId)
+                ->orderBy('id')
+                ->pluck('telegram_id')
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
 
-        TelegramUser::query()
-            ->where(
-                'telegram_id',
-                '!=',
-                $this->authorTelegramId
-            )
-            ->where(
-                'chat_notifications',
-                true
-            )
-            ->orderBy('id')
-            ->chunkById(
-                100,
-                function ($recipients) use (
-                    $telegram,
-                    $encodedEntities
-                ) {
-                    $deliveries = [];
+            if (empty($telegramUserIds)) {
+                Log::info(
+                    'GlobalChatDeliveryJob EMPTY',
+                    [
+                        'chatMessageId' => $this->chatMessageId,
+                    ]
+                );
 
-                    foreach ($recipients as $recipient) {
-                        try {
-                            /*
-                            |--------------------------------------------------------------------------
-                            | STICKER
-                            |--------------------------------------------------------------------------
-                            */
+                return;
+            }
 
-                            if ($this->messageType === 'sticker') {
-                                /*
-                                | Sticker сам по себе не поддерживает
-                                | caption/entities.
-                                |
-                                | Поэтому сначала отправляем текст,
-                                | затем sticker.
-                                */
+            /*
+            |--------------------------------------------------------------------------
+            | Разбиваем получателей на пакеты по 50
+            |--------------------------------------------------------------------------
+            */
 
-                                if ($this->chatText !== '') {
-                                    $headerParams = [
-                                        'chat_id' =>
-                                            $recipient->telegram_id,
+            $batches = array_chunk($telegramUserIds, 50);
 
-                                        'text' =>
-                                            $this->chatText,
+            $dispatched = 0;
 
-                                        'entities' =>
-                                            $encodedEntities,
-                                    ];
+            foreach ($batches as $index => $userIds) {
+                GlobalChatDeliveryBatchJob::dispatch(
+                    chatMessageId: $this->chatMessageId,
+                    replyToChatMessageId: $this->replyToChatMessageId,
+                    authorTelegramId: $this->authorTelegramId,
+                    chatText: $this->chatText,
+                    entities: $this->entities,
+                    messageType: $this->messageType,
+                    mediaFileId: $this->mediaFileId,
+                    telegramUserIds: $userIds,
+                )->onQueue('telegram');
 
-                                    Log::info(
-                                        'TELEGRAM SEND STICKER HEADER',
-                                        [
-                                            'recipient' =>
-                                                $recipient->telegram_id,
+                $dispatched++;
 
-                                            'entities' =>
-                                                $this->entities,
-                                        ]
-                                    );
+                Log::info(
+                    'GlobalChatDeliveryBatchJob DISPATCHED',
+                    [
+                        'chatMessageId' => $this->chatMessageId,
+                        'batch' => $index + 1,
+                        'recipients' => count($userIds),
+                    ]
+                );
+            }
 
-                                    $telegram->sendMessage(
-                                        $headerParams
-                                    );
-                                }
-
-                                if (!$this->mediaFileId) {
-                                    throw new \RuntimeException(
-                                        'Sticker file_id is empty'
-                                    );
-                                }
-
-                                $sendParams = [
-                                    'chat_id' =>
-                                        $recipient->telegram_id,
-
-                                    'sticker' =>
-                                        $this->mediaFileId,
-                                ];
-
-                                Log::info(
-                                    'TELEGRAM SEND STICKER',
-                                    [
-                                        'recipient' =>
-                                            $recipient->telegram_id,
-
-                                        'chatMessageId' =>
-                                            $this->chatMessageId,
-
-                                        'sendParams' =>
-                                            $sendParams,
-                                    ]
-                                );
-
-                                $sentMessage =
-                                    $telegram->sendSticker(
-                                        $sendParams
-                                    );
-                            }
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | TEXT
-                            |--------------------------------------------------------------------------
-                            */
-
-                            elseif (
-                                $this->messageType === 'text'
-                            ) {
-                                $sendParams = [
-                                    'chat_id' =>
-                                        $recipient->telegram_id,
-
-                                    'text' =>
-                                        $this->chatText,
-
-                                    'entities' =>
-                                        $encodedEntities,
-                                ];
-
-                                Log::info(
-                                    'TELEGRAM SEND TEXT',
-                                    [
-                                        'recipient' =>
-                                            $recipient->telegram_id,
-
-                                        'chatMessageId' =>
-                                            $this->chatMessageId,
-
-                                        'entities' =>
-                                            $this->entities,
-
-                                        'encodedEntities' =>
-                                            $encodedEntities,
-                                    ]
-                                );
-
-                                $sentMessage =
-                                    $telegram->sendMessage(
-                                        $sendParams
-                                    );
-                            }
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | MEDIA
-                            |--------------------------------------------------------------------------
-                            */
-
-                            else {
-                                if (!$this->mediaFileId) {
-                                    throw new \RuntimeException(
-                                        'Media file_id is empty'
-                                    );
-                                }
-
-                                $sendParams = [
-                                    'chat_id' =>
-                                        $recipient->telegram_id,
-                                ];
-
-                                /*
-                                |--------------------------------------------------------------
-                                | Caption
-                                |--------------------------------------------------------------
-                                */
-
-                                if ($this->chatText !== '') {
-                                    $sendParams['caption'] =
-                                        $this->chatText;
-
-                                    $sendParams['caption_entities'] =
-                                        $encodedEntities;
-                                }
-
-                                $sentMessage =
-                                    $this->sendMedia(
-                                        $telegram,
-                                        $sendParams
-                                    );
-                            }
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | Telegram message_id
-                            |--------------------------------------------------------------------------
-                            */
-
-                            $sentTelegramMessageId =
-                                $sentMessage->getMessageId();
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | Сохраняем связь
-                            |--------------------------------------------------------------------------
-                            */
-
-                            $now = now();
-
-                            $deliveries[] = [
-                                'chat_message_id' =>
-                                    $this->chatMessageId,
-
-                                'telegram_user_id' =>
-                                    $recipient->id,
-
-                                'telegram_message_id' =>
-                                    $sentTelegramMessageId,
-
-                                'created_at' =>
-                                    $now,
-
-                                'updated_at' =>
-                                    $now,
-                            ];
-
-                            Log::info(
-                                'TELEGRAM SEND SUCCESS',
-                                [
-                                    'recipient' =>
-                                        $recipient->telegram_id,
-
-                                    'telegramMessageId' =>
-                                        $sentTelegramMessageId,
-
-                                    'chatMessageId' =>
-                                        $this->chatMessageId,
-
-                                    'messageType' =>
-                                        $this->messageType,
-                                ]
-                            );
-                        } catch (Throwable $e) {
-                            /*
-                            |--------------------------------------------------------------------------
-                            | Ошибка одного пользователя
-                            |--------------------------------------------------------------------------
-                            */
-
-                            Log::warning(
-                                'Global chat send error',
-                                [
-                                    'telegram_user_id' =>
-                                        $recipient->id,
-
-                                    'telegram_id' =>
-                                        $recipient->telegram_id,
-
-                                    'chat_message_id' =>
-                                        $this->chatMessageId,
-
-                                    'messageType' =>
-                                        $this->messageType,
-
-                                    'message' =>
-                                        $e->getMessage(),
-
-                                    'trace' =>
-                                        $e->getTraceAsString(),
-                                ]
-                            );
-                        }
-                    }
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Сохраняем Telegram message_id
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if (!empty($deliveries)) {
-                        ChatMessageDelivery::upsert(
-                            $deliveries,
-                            [
-                                'chat_message_id',
-                                'telegram_user_id',
-                            ],
-                            [
-                                'telegram_message_id',
-                                'updated_at',
-                            ]
-                        );
-                    }
-                }
+            Log::info(
+                'GlobalChatDeliveryJob DONE',
+                [
+                    'chatMessageId' => $this->chatMessageId,
+                    'recipients' => count($telegramUserIds),
+                    'batches' => $dispatched,
+                    'duration' => round(
+                        microtime(true) - $startedAt,
+                        3
+                    ),
+                ]
+            );
+        } catch (Throwable $e) {
+            Log::error(
+                'GlobalChatDeliveryJob ERROR',
+                [
+                    'chatMessageId' => $this->chatMessageId,
+                    'error' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
             );
 
-        Log::info(
-            'GlobalChatDeliveryJob DONE',
-            [
-                'chatMessageId' =>
-                    $this->chatMessageId,
-
-                'replyToChatMessageId' =>
-                    $this->replyToChatMessageId,
-
-                'messageType' =>
-                    $this->messageType,
-            ]
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | JSON для Telegram entities
-    |--------------------------------------------------------------------------
-    */
-
-    private function encodeEntities(): string
-    {
-        return json_encode(
-            $this->entities,
-            JSON_UNESCAPED_UNICODE |
-            JSON_UNESCAPED_SLASHES |
-            JSON_THROW_ON_ERROR
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Отправка media
-    |--------------------------------------------------------------------------
-    */
-
-    private function sendMedia(
-        Api $telegram,
-        array $sendParams
-    ) {
-        switch ($this->messageType) {
-            case 'animation':
-                $sendParams['animation'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendAnimation(
-                    $sendParams
-                );
-
-            case 'voice':
-                $sendParams['voice'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendVoice(
-                    $sendParams
-                );
-
-            case 'video':
-                $sendParams['video'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendVideo(
-                    $sendParams
-                );
-
-            case 'photo':
-                $sendParams['photo'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendPhoto(
-                    $sendParams
-                );
-
-            case 'audio':
-                $sendParams['audio'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendAudio(
-                    $sendParams
-                );
-
-            case 'document':
-                $sendParams['document'] =
-                    $this->mediaFileId;
-
-                return $telegram->sendDocument(
-                    $sendParams
-                );
-
-            default:
-                throw new \RuntimeException(
-                    'Unsupported media type: '
-                    . $this->messageType
-                );
+            throw $e;
         }
     }
 }
