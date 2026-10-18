@@ -12,37 +12,59 @@ class TelegramUser extends Model
         'telegram_id',
         'username',
         'first_name',
-         'chat_notifications',
-         'chat_icon_selection',
-          'chat_icon'
+
+        // Настройки чата
+        'chat_notifications',
+        'chat_icon_selection',
+        'chat_icon',
+
+        // Профиль игрока
+        'game_skin',
+        'bio',
+        'server',
+
+        // Социальные сети
+        'instagram',
+        'telegram_channel',
+        'tiktok',
+        'youtube',
+        'twitch',
+        'other_link',
     ];
+
     protected $casts = [
-    'chat_notifications' => 'boolean',
-    'chat_icon_selection' => 'boolean',
-];
+        'chat_notifications' => 'boolean',
+        'chat_icon_selection' => 'boolean',
+    ];
+
     public function gameProfile()
     {
         return $this->hasOne(GameProfile::class);
     }
+
     public function botSession()
     {
         return $this->hasOne(BotSession::class);
     }
+
     public function lobbies()
-{
-    return $this->hasMany(
-        LobbyPlayer::class
-    );
-}
-public function lobbyPlayers()
-{
-    return $this->hasMany(
-        LobbyPlayer::class,
-        'telegram_user_id'
-    );
-}
-public function chatMessages()
-{
-    return $this->hasMany(ChatMessage::class, 'telegram_user_id');
-}
+    {
+        return $this->hasMany(LobbyPlayer::class);
+    }
+
+    public function lobbyPlayers()
+    {
+        return $this->hasMany(
+            LobbyPlayer::class,
+            'telegram_user_id'
+        );
+    }
+
+    public function chatMessages()
+    {
+        return $this->hasMany(
+            ChatMessage::class,
+            'telegram_user_id'
+        );
+    }
 }

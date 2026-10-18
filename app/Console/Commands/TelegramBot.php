@@ -12,6 +12,7 @@ use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\GameProfileHandler;
 use App\Services\Bot\AdminHandler;
 use App\Services\Bot\GlobalChatHandler;
+use App\Services\Bot\TopicAccessHandler;
 
 use App\Services\Bot\Lobby\LobbyHandler;
 use App\Services\Bot\Lobby\KickPlayerHandler;
@@ -62,6 +63,8 @@ class TelegramBot extends Command
         $kickPlayerHandler = new KickPlayerHandler();
 
         $globalChatHandler = new GlobalChatHandler();
+
+        $topicAccessHandler = new TopicAccessHandler();
 
         $adminHandler = new AdminHandler();
 
@@ -250,6 +253,29 @@ class TelegramBot extends Command
 
                         $telegramId =
                             $message->from->id ?? null;
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Доступ к темам Telegram
+                        |--------------------------------------------------------------------------
+                        |
+                        | /topicadd    — ответом на сообщение разрешённого пользователя
+                        | /topicremove — ответом на сообщение удаляемого пользователя
+                        | /topiclist   — список разрешённых в текущей теме
+                        |
+                        | Обработчик вызывается до остальных обработчиков, чтобы
+                        | сообщения из закрытых тем не проходили в другие функции.
+                        |
+                        */
+
+                        if (
+                            $topicAccessHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
+                            continue;
+                        }
 
                         /*
                         |--------------------------------------------------------------------------
