@@ -1,10 +1,11 @@
+
 <?php
 
 namespace App\Services\Bot;
 
+use App\Models\TelegramUser;
 use App\Models\TopicAccessTopic;
 use App\Models\TopicAccessUser;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Throwable;
@@ -12,85 +13,191 @@ use Throwable;
 class TopicAccessHandler
 {
     /**
-     * Обрабатывает команды управления доступом и проверяет сообщения
-     * в защищённых темах. Возвращает true, если сообщение обработано.
+     * Обработка сообщений и управления доступом к темам.
      */
     public function handle($message, Api $telegram): bool
     {
-        $chatId = (int) ($message->chat->id ?? 0);
-        $chatType = $message->chat->type ?? null;
-        $userId = (int) ($message->from->id ?? 0);
-        $messageId = (int) ($message->messageId ?? $message->message_id ?? 0);
+        $chatId = (int) data_get($message, 'chat.id', 0);
+        $chatType = (string) data_get($message, 'chat.type', '');
+        $userId = (int) data_get($message, 'from.id', 0);
+        $messageId = (int) data_get($message, 'message_id', 0);
         $threadId = $this->getThreadId($message);
-        $text = trim((string) ($message->text ?? ''));
+        $text = trim((string) data_get($message, 'text', ''));
 
-        if ($chatId === 0 || $userId === 0 || $chatType !== 'supergroup') {
+        // Работаем только в супергруппах.
+        if ($chatType !== 'supergroup' || $chatId === 0) {
             return false;
         }
 
-        $command = $this->getCommand($text);
+        // Сообщения без пользователя, например системные, пропускаем.
+        if ($userId === 0) {
+            return false;
+        }
 
-        // Команды управления должны обрабатываться до проверки списка доступа.
-        if (in_array($command, ['/topicadd', '/topicremove', '/topiclist'], true)) {
-            if ($threadId === null) {
+        // Команды управления работают только внутри темы.
+        if ($threadId === null) {
+            return false;
+        }
+
+        $normalizedText = mb_strtolower($text, 'UTF-8');
+
+        /*
+         * ФЕЙМЫ — показать список.
+         * Регистр не имеет значения.
+         */
+        if ($normalizedText === 'феймы') {
+            if (!$this->isChatAdmin($telegram, $chatId, $userId)) {
+                // Список доступен участникам группы.
+                // Администраторская проверка здесь не требуется.
+            }
+
+            $this->showFames(
+                $telegram,
+                $chatId,
+                $threadId
+            );
+
+            return true;
+        }
+
+        /*
+         * ДОБАВИТЬ ФЕЙМА
+         * ДОБАВИТЬ ФЕЙМА @username
+         * ДОБАВИТЬ ФЕЙМА 123456789
+         */
+        if (preg_match(
+            '/^добавить\s+фейма(?:\s+(.+))?$/iu',
+            $text,
+            $matches
+        )) {
+            if (!$this->isChatAdmin($telegram, $chatId, $userId)) {
                 $this->sendReply(
                     $telegram,
                     $chatId,
-                    null,
-                    '❌ Команду нужно отправить внутри конкретной темы форума.'
+                    $threadId,
+                    '❌ Управлять списком феймов могут только администраторы группы.'
                 );
+
                 return true;
             }
 
+            $lookup = trim($matches[1] ?? '');
+
+            $target = $this->resolveTarget(
+                $message,
+                $lookup
+            );
+
+            if (!$target) {
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    "❌ Не удалось найти пользователя.\n\n"
+                    . "Ответь на его сообщение или укажи username либо Telegram ID:\n"
+                    . "<code>добавить фейма @username</code>\n"
+                    . "<code>добавить фейма 123456789</code>"
+                );
+
+                return true;
+            }
+
+            $targetId = (int) $target['id'];
+
+            if ($targetId === $userId) {
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    '❌ Нельзя добавить самого себя.'
+                );
+
+                return true;
+            }
+
+            // Создаём защиту темы только после проверки пользователя.
+            $topic = TopicAccessTopic::query()->firstOrCreate([
+                'chat_id' => $chatId,
+                'message_thread_id' => $threadId,
+            ]);
+
+            $existing = TopicAccessUser::query()
+                ->where('topic_access_topic_id', $topic->id)
+                ->where('telegram_user_id', $targetId)
+                ->exists();
+
+            if ($existing) {
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    'ℹ️ Этот пользователь уже есть в списке феймов.'
+                );
+
+                return true;
+            }
+
+            TopicAccessUser::query()->create([
+                'topic_access_topic_id' => $topic->id,
+                'telegram_user_id' => $targetId,
+                'username' => $target['username'],
+                'first_name' => $target['first_name'],
+                'added_by' => $userId,
+            ]);
+
+            $this->sendReply(
+                $telegram,
+                $chatId,
+                $threadId,
+                '👑 <b>Фейм добавлен!</b>' . "\n\n"
+                . 'Пользователь: '
+                . $this->formatUser(
+                    $target['username'],
+                    $target['first_name'],
+                    $targetId
+                )
+            );
+
+            return true;
+        }
+
+        /*
+         * УДАЛИТЬ ФЕЙМА
+         * УДАЛИТЬ ФЕЙМА @username
+         * УДАЛИТЬ ФЕЙМА 123456789
+         */
+        if (preg_match(
+            '/^удалить\s+фейма(?:\s+(.+))?$/iu',
+            $text,
+            $matches
+        )) {
             if (!$this->isChatAdmin($telegram, $chatId, $userId)) {
-                $this->sendReply($telegram, $chatId, $threadId, '❌ Управлять доступом к теме могут только администраторы группы.');
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    '❌ Управлять списком феймов могут только администраторы группы.'
+                );
+
                 return true;
             }
 
-            if ($command === '/topicadd') {
-                $reply = $message->replyToMessage ?? $message->reply_to_message ?? null;
-                $target = $reply->from ?? null;
-                $targetId = (int) ($target->id ?? 0);
+            $lookup = trim($matches[1] ?? '');
 
-                if (!$targetId || ($target->isBot ?? $target->is_bot ?? false)) {
-                    $this->sendReply($telegram, $chatId, $threadId, '❌ Используй /topicadd ответом на сообщение пользователя.');
-                    return true;
-                }
+            $target = $this->resolveTarget(
+                $message,
+                $lookup
+            );
 
-                if ($targetId === $userId) {
-                    $this->sendReply($telegram, $chatId, $threadId, '❌ Нельзя добавить самого себя этой командой.');
-                    return true;
-                }
-
-                // Включаем защиту только после корректного /topicadd с ответом на сообщение.
-                $topic = TopicAccessTopic::query()->firstOrCreate([
-                    'chat_id' => $chatId,
-                    'message_thread_id' => $threadId,
-                ]);
-
-                TopicAccessUser::query()->firstOrCreate(
-                    [
-                        'topic_access_topic_id' => $topic->id,
-                        'telegram_user_id' => $targetId,
-                    ],
-                    [
-                        'username' => $target->username ?? null,
-                        'first_name' => $target->firstName ?? $target->first_name ?? null,
-                        'added_by' => $userId,
-                    ]
+            if (!$target) {
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    "❌ Не удалось найти пользователя.\n\n"
+                    . "Ответь на его сообщение или укажи username либо Telegram ID."
                 );
 
-                // Обновляем данные, если пользователь уже был в списке.
-                TopicAccessUser::query()
-                    ->where('topic_access_topic_id', $topic->id)
-                    ->where('telegram_user_id', $targetId)
-                    ->update([
-                        'username' => $target->username ?? null,
-                        'first_name' => $target->firstName ?? $target->first_name ?? null,
-                    ]);
-
-                $display = $this->formatUser($targetId, $target->username ?? null, $target->firstName ?? $target->first_name ?? null);
-                $this->sendReply($telegram, $chatId, $threadId, "✅ {$display} добавлен(а) в список разрешённых этой темы. Защита темы включена.");
                 return true;
             }
 
@@ -100,66 +207,52 @@ class TopicAccessHandler
                 ->first();
 
             if (!$topic) {
-                $this->sendReply($telegram, $chatId, $threadId, 'ℹ️ Защита этой темы ещё не включена. Ответь командой /topicadd на сообщение пользователя, чтобы включить её.');
-                return true;
-            }
-
-            if ($command === '/topicremove') {
-                $reply = $message->replyToMessage ?? $message->reply_to_message ?? null;
-                $target = $reply->from ?? null;
-                $targetId = (int) ($target->id ?? 0);
-
-                if (!$targetId) {
-                    $this->sendReply($telegram, $chatId, $threadId, '❌ Используй /topicremove ответом на сообщение пользователя из списка.');
-                    return true;
-                }
-
-                $deleted = TopicAccessUser::query()
-                    ->where('topic_access_topic_id', $topic->id)
-                    ->where('telegram_user_id', $targetId)
-                    ->delete();
-
-                $display = $this->formatUser($targetId, $target->username ?? null, $target->firstName ?? $target->first_name ?? null);
                 $this->sendReply(
                     $telegram,
                     $chatId,
                     $threadId,
-                    $deleted
-                        ? "✅ {$display} удалён(а) из списка. Защита темы остаётся включённой."
-                        : "ℹ️ {$display} не найден(а) в списке этой темы."
+                    'ℹ️ В этой теме пока нет списка феймов.'
                 );
+
                 return true;
             }
 
-            $users = TopicAccessUser::query()
+            $removed = TopicAccessUser::query()
                 ->where('topic_access_topic_id', $topic->id)
-                ->orderBy('first_name')
-                ->orderBy('telegram_user_id')
-                ->get();
+                ->where('telegram_user_id', $target['id'])
+                ->delete();
 
-            if ($users->isEmpty()) {
-                $this->sendReply($telegram, $chatId, $threadId, '📋 Список разрешённых пуст. Тема защищена: писать могут только администраторы, пока ты не добавишь пользователей через /topicadd.');
+            if ($removed === 0) {
+                $this->sendReply(
+                    $telegram,
+                    $chatId,
+                    $threadId,
+                    'ℹ️ Этого пользователя нет в списке феймов.'
+                );
+
                 return true;
             }
 
-            $lines = ['📋 <b>Разрешённые пользователи этой темы:</b>', ''];
-            foreach ($users as $user) {
-                $lines[] = '• ' . $this->escapeHtml($this->formatUser(
-                    (int) $user->telegram_user_id,
-                    $user->username,
-                    $user->first_name
-                ));
-            }
+            $this->sendReply(
+                $telegram,
+                $chatId,
+                $threadId,
+                '🗑 <b>Фейм удалён!</b>' . "\n\n"
+                . 'Пользователь: '
+                . $this->formatUser(
+                    $target['username'],
+                    $target['first_name'],
+                    $target['id']
+                )
+            );
 
-            $this->sendReply($telegram, $chatId, $threadId, implode("\n", $lines), 'HTML');
             return true;
         }
 
-        // Не защищённая тема — не вмешиваемся.
-        if ($threadId === null) {
-            return false;
-        }
-
+        /*
+         * Проверка сообщений в защищённой теме.
+         * Не добавленные пользователи не могут писать.
+         */
         $topic = TopicAccessTopic::query()
             ->where('chat_id', $chatId)
             ->where('message_thread_id', $threadId)
@@ -169,111 +262,293 @@ class TopicAccessHandler
             return false;
         }
 
-        // Разрешённые пользователи проходят без дополнительного запроса к Telegram.
+        // Администраторы группы обходят ограничение.
+        if ($this->isChatAdmin($telegram, $chatId, $userId)) {
+            return false;
+        }
+
         $allowed = TopicAccessUser::query()
             ->where('topic_access_topic_id', $topic->id)
             ->where('telegram_user_id', $userId)
             ->exists();
 
-        if ($allowed || $this->isChatAdmin($telegram, $chatId, $userId)) {
-            return false;
-        }
-
-        if ($messageId > 0) {
+        if (!$allowed && $messageId > 0) {
             try {
                 $telegram->deleteMessage([
                     'chat_id' => $chatId,
                     'message_id' => $messageId,
                 ]);
             } catch (Throwable $e) {
-                Log::warning('Не удалось удалить сообщение в защищённой теме', [
+                Log::warning('TopicAccess: failed to delete message', [
                     'chat_id' => $chatId,
-                    'message_id' => $messageId,
                     'thread_id' => $threadId,
                     'user_id' => $userId,
+                    'message_id' => $messageId,
                     'error' => $e->getMessage(),
                 ]);
             }
         }
 
-        return true;
+        return !$allowed;
     }
 
+    /**
+     * Получение ID темы.
+     */
     private function getThreadId($message): ?int
     {
-        $id = $message->messageThreadId ?? $message->message_thread_id ?? null;
-        return is_numeric($id) && (int) $id > 0 ? (int) $id : null;
+        $threadId = (int) (
+            data_get($message, 'message_thread_id')
+            ?? data_get($message, 'messageThreadId')
+            ?? 0
+        );
+
+        return $threadId > 0 ? $threadId : null;
     }
 
-    private function getCommand(string $text): string
+    /**
+     * Поиск пользователя:
+     * 1. По ответу на сообщение.
+     * 2. По Telegram ID.
+     * 3. По username из локальной базы.
+     */
+    private function resolveTarget($message, string $lookup): ?array
     {
-        if (!preg_match('/^\/(topicadd|topicremove|topiclist)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i', $text, $matches)) {
-            return '';
+        if ($lookup === '') {
+            $reply = data_get($message, 'reply_to_message')
+                ?? data_get($message, 'replyToMessage');
+
+            $from = data_get($reply, 'from');
+
+            if (!$from) {
+                return null;
+            }
+
+            if ((bool) (
+                data_get($from, 'is_bot')
+                ?? data_get($from, 'isBot')
+                ?? false
+            )) {
+                return null;
+            }
+
+            $id = (int) data_get($from, 'id', 0);
+
+            if ($id <= 0) {
+                return null;
+            }
+
+            return [
+                'id' => $id,
+                'username' => $this->normalizeUsername(
+                    data_get($from, 'username')
+                ),
+                'first_name' => $this->cleanName(
+                    data_get($from, 'first_name')
+                    ?? data_get($from, 'firstName')
+                ),
+            ];
         }
 
-        return '/' . strtolower($matches[1]);
+        $lookup = trim($lookup);
+
+        // Telegram ID.
+        if (preg_match('/^\d+$/', $lookup)) {
+            $id = (int) $lookup;
+
+            if ($id <= 0) {
+                return null;
+            }
+
+            $dbUser = TelegramUser::query()
+                ->where('telegram_id', $id)
+                ->first();
+
+            return [
+                'id' => $id,
+                'username' => $this->normalizeUsername(
+                    $dbUser->username ?? null
+                ),
+                'first_name' => $this->cleanName(
+                    $dbUser->first_name ?? null
+                ),
+            ];
+        }
+
+        // Username можно разрешить только через локальную базу.
+        $username = ltrim($lookup, '@');
+
+        if ($username === '') {
+            return null;
+        }
+
+        $dbUser = TelegramUser::query()
+            ->whereRaw('LOWER(username) = ?', [
+                mb_strtolower($username, 'UTF-8'),
+            ])
+            ->first();
+
+        if (!$dbUser) {
+            return null;
+        }
+
+        $id = (int) $dbUser->telegram_id;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'username' => $this->normalizeUsername(
+                $dbUser->username
+            ),
+            'first_name' => $this->cleanName(
+                $dbUser->first_name
+            ),
+        ];
     }
 
-    private function isChatAdmin(Api $telegram, int $chatId, int $userId): bool
-    {
-        try {
-            $status = Cache::remember(
-                "topic_access_admin_{$chatId}_{$userId}",
-                now()->addSeconds(45),
-                function () use ($telegram, $chatId, $userId) {
-                    $member = $telegram->getChatMember([
-                        'chat_id' => $chatId,
-                        'user_id' => $userId,
-                    ]);
+    /**
+     * Отображение списка феймов.
+     */
+    private function showFames(
+        Api $telegram,
+        int $chatId,
+        int $threadId
+    ): void {
+        $topic = TopicAccessTopic::query()
+            ->where('chat_id', $chatId)
+            ->where('message_thread_id', $threadId)
+            ->first();
 
-                    return $member->status ?? null;
-                }
+        $users = $topic
+            ? TopicAccessUser::query()
+                ->where('topic_access_topic_id', $topic->id)
+                ->orderBy('created_at')
+                ->get()
+            : collect();
+
+        $text = "👑 <b>ФЕЙМЫ</b>\n\n";
+
+        if ($users->isEmpty()) {
+            $text .= "Список пока пуст.\n\n";
+            $text .= '👥 <b>Всего:</b> 0';
+        } else {
+            foreach ($users as $user) {
+                $name = $this->formatUser(
+                    $user->username,
+                    $user->first_name,
+                    $user->telegram_user_id
+                );
+
+                $text .= "👑 {$name}\n";
+            }
+
+            $text .= "\n👥 <b>Всего:</b> " . $users->count();
+        }
+
+        $this->sendReply(
+            $telegram,
+            $chatId,
+            $threadId,
+            $text
+        );
+    }
+
+    /**
+     * Проверка прав администратора группы.
+     */
+    private function isChatAdmin(
+        Api $telegram,
+        int $chatId,
+        int $userId
+    ): bool {
+        try {
+            $member = $telegram->getChatMember([
+                'chat_id' => $chatId,
+                'user_id' => $userId,
+            ]);
+
+            $status = (string) (
+                data_get($member, 'status') ?? ''
             );
 
-            return in_array($status, ['creator', 'administrator'], true);
+            return in_array($status, [
+                'creator',
+                'administrator',
+            ], true);
         } catch (Throwable $e) {
-            Log::warning('Не удалось проверить права администратора для защиты темы', [
+            Log::warning('TopicAccess: admin check failed', [
                 'chat_id' => $chatId,
                 'user_id' => $userId,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
 
-    private function sendReply(Api $telegram, int $chatId, ?int $threadId, string $text, ?string $parseMode = null): void
-    {
-        $params = [
+    /**
+     * Отправка ответа в ту же тему.
+     */
+    private function sendReply(
+        Api $telegram,
+        int $chatId,
+        int $threadId,
+        string $text
+    ): void {
+        $telegram->sendMessage([
             'chat_id' => $chatId,
+            'message_thread_id' => $threadId,
             'text' => $text,
-        ];
-
-        if ($threadId !== null) {
-            $params['message_thread_id'] = $threadId;
-        }
-
-        if ($parseMode !== null) {
-            $params['parse_mode'] = $parseMode;
-        }
-
-        $telegram->sendMessage($params);
+            'parse_mode' => 'HTML',
+        ]);
     }
 
-    private function formatUser(int $id, ?string $username, ?string $firstName): string
-    {
-        if ($username) {
-            return '@' . ltrim($username, '@') . " (ID: {$id})";
+    /**
+     * Формирование имени пользователя.
+     */
+    private function formatUser(
+        ?string $username,
+        ?string $firstName,
+        int $userId
+    ): string {
+        $username = $this->normalizeUsername($username);
+        $firstName = $this->cleanName($firstName);
+
+        if ($username !== null) {
+            $name = '@' . $username;
+        } elseif ($firstName !== null) {
+            $name = $firstName;
+        } else {
+            $name = 'ID: ' . $userId;
         }
 
-        if ($firstName) {
-            return "{$firstName} (ID: {$id})";
-        }
-
-        return "ID: {$id}";
+        return $this->escapeHtml($name);
     }
 
-    private function escapeHtml(string $value): string
+    private function normalizeUsername($username): ?string
     {
-        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $username = trim((string) $username);
+        $username = ltrim($username, '@');
+
+        return $username !== '' ? $username : null;
+    }
+
+    private function cleanName($name): ?string
+    {
+        $name = trim((string) $name);
+
+        return $name !== '' ? $name : null;
+    }
+
+    private function escapeHtml(string $text): string
+    {
+        return htmlspecialchars(
+            $text,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
     }
 }
