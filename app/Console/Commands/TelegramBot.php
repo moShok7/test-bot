@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Console\Commands;
@@ -203,6 +204,51 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
+                        | ПЕРЕХВАТ ВВОДА ИГРОВОГО ПРОФИЛЯ
+                        |--------------------------------------------------------------------------
+                        |
+                        | Пока пользователь вводит ник, ID или скриншот,
+                        | сообщение обрабатывается здесь и не доходит
+                        | до глобального чата.
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($telegramId) {
+                            $profileGuardUser = TelegramUser::where(
+                                'telegram_id',
+                                $telegramId
+                            )->first();
+
+                            if ($profileGuardUser) {
+                                $profileGuardSteps = [
+                                    'nickname',
+                                    'game_id',
+                                    'screenshot',
+                                    'edit_nickname',
+                                    'edit_game_id',
+                                    'edit_screenshot',
+                                ];
+
+                                $profileGuardSession = BotSession::where(
+                                    'telegram_user_id',
+                                    $profileGuardUser->id
+                                )
+                                    ->whereIn('step', $profileGuardSteps)
+                                    ->first();
+
+                                if ($profileGuardSession) {
+                                    $gameProfileHandler->handle(
+                                        $message,
+                                        $telegram
+                                    );
+
+                                    continue;
+                                }
+                            }
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
                         | Сброс старых BotSession
                         |--------------------------------------------------------------------------
                         */
@@ -236,6 +282,26 @@ class TelegramBot extends Command
                         */
 
                         if ($settingsHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Защита от попадания редактирования профиля в глобальный чат
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $profileGuardUser = $telegramId
+                            ? TelegramUser::where(
+                                'telegram_id',
+                                $telegramId
+                            )->first()
+                            : null;
+
+                        if (
+                            $profileGuardUser &&
+                            !empty($profileGuardUser->profile_editing)
+                        ) {
                             continue;
                         }
 
