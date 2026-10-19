@@ -26,60 +26,67 @@ class SettingsHandler
         $state = $user->profile_editing;
 
         /*
-         * Принимаем скриншот персонажа.
-         * Поддерживаются фотографии и изображения, отправленные документом.
+         * Отмена редактирования.
+         */
+        if ($state && $text === '❌ Отмена') {
+            $user->profile_editing = null;
+            $user->profile_social_platform = null;
+            $user->save();
+
+            $this->showProfile($message, $telegram, $user);
+
+            return true;
+        }
+
+        /*
+         * Сохранение скриншота персонажа.
          */
         if ($state === 'game_skin') {
-            if ($text === '❌ Отмена') {
-                $user->profile_editing = null;
-                $user->save();
-
-                $this->showProfile($message, $telegram, $user);
-                return true;
-            }
-
             $fileId = null;
 
-            if (!empty($message->photo)) {
-                $photos = $message->photo;
-                $lastPhoto = end($photos);
+            $photos = $message->photo ?? [];
 
-                $fileId = $lastPhoto->file_id
-                    ?? ($lastPhoto['file_id'] ?? null);
+            if (count($photos) > 0) {
+                $lastPhoto = $photos[count($photos) - 1];
+
+                $fileId = is_array($lastPhoto)
+                    ? ($lastPhoto['file_id'] ?? null)
+                    : ($lastPhoto->file_id ?? null);
             }
 
-            if (!empty($message->document)) {
-                $document = $message->document;
-                $mimeType = $document->mime_type
-                    ?? ($document['mime_type'] ?? '');
+            $document = $message->document ?? null;
+
+            if ($document) {
+                $mimeType = is_array($document)
+                    ? ($document['mime_type'] ?? '')
+                    : ($document->mime_type ?? '');
 
                 if (str_starts_with($mimeType, 'image/')) {
-                    $fileId = $document->file_id
-                        ?? ($document['file_id'] ?? null);
+                    $fileId = is_array($document)
+                        ? ($document['file_id'] ?? null)
+                        : ($document->file_id ?? null);
                 }
             }
 
             if (!$fileId) {
-                $this->prompt(
-                    $message,
-                    $telegram,
-                    'Отправь скриншот персонажа из игры как фотографию или изображение. Для отмены нажми «❌ Отмена».'
-                );
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => 'Отправь скриншот персонажа фотографией или изображением. Для отмены нажми «❌ Отмена».',
+                    'reply_markup' => $this->cancelKeyboard(),
+                ]);
 
                 return true;
             }
 
-            // Сохраняем Telegram file_id без изменения модели.
             DB::table('telegram_users')
                 ->where('id', $user->id)
                 ->update([
                     'game_skin' => $fileId,
+                    'profile_editing' => null,
                     'updated_at' => now(),
                 ]);
 
             $user->refresh();
-            $user->profile_editing = null;
-            $user->save();
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
@@ -87,100 +94,117 @@ class SettingsHandler
             ]);
 
             $this->showProfile($message, $telegram, $user);
+
             return true;
         }
 
         /*
-         * Обработка остальных состояний редактирования.
+         * Сохранение сервера 13+ / 13-.
          */
-        if ($state) {
-            if ($text === '❌ Отмена') {
-                $user->profile_editing = null;
-                $user->profile_social_platform = null;
-                $user->save();
+        if ($state === 'server') {
+            if (!in_array($text, ['13+', '13-'], true)) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => 'Выбери сервер кнопкой 13+ или 13-.',
+                    'reply_markup' => $this->serverKeyboard(),
+                ]);
 
-                $this->showProfile($message, $telegram, $user);
                 return true;
             }
 
-            if ($state === 'bio') {
-                if ($text === '') {
-                    $this->prompt(
-                        $message,
-                        $telegram,
-                        'Описание не может быть пустым.'
-                    );
-                    return true;
-                }
+            DB::table('telegram_users')
+                ->where('id', $user->id)
+                ->update([
+                    'server' => $text,
+                    'profile_editing' => null,
+                    'updated_at' => now(),
+                ]);
 
-                $user->bio = mb_substr($text, 0, 500);
-                $user->profile_editing = null;
-                $user->save();
+            $user->refresh();
 
-                $this->showProfile($message, $telegram, $user);
-                return true;
-            }
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => "✅ Сервер {$text} сохранён.",
+            ]);
 
-            if ($state === 'server') {
-                if (!in_array($text, ['13+', '13-'], true)) {
-                    $telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => 'Выбери сервер кнопкой 13+ или 13-.',
-                        'reply_markup' => $this->serverKeyboard(),
-                    ]);
+            $this->showProfile($message, $telegram, $user);
 
-                    return true;
-                }
+            return true;
+        }
 
-                $user->server = $text;
-                $user->profile_editing = null;
-                $user->save();
-
-                $this->showProfile($message, $telegram, $user);
-                return true;
-            }
-
-            if ($state === 'social_url') {
-                $platform = $user->profile_social_platform;
-                $url = $this->normalizeSocialUrl($platform, $text);
-
-                if (!$url) {
-                    $this->prompt(
-                        $message,
-                        $telegram,
-                        'Некорректный ник или ссылка. Проверь данные и попробуй снова.'
-                    );
-
-                    return true;
-                }
-
-                $now = now();
-
-                DB::table('telegram_user_socials')->updateOrInsert(
-                    [
-                        'telegram_user_id' => $user->id,
-                        'platform' => $platform,
-                    ],
-                    [
-                        'url' => $url,
-                        'updated_at' => $now,
-                        'created_at' => $now,
-                    ]
+        /*
+         * Описание профиля.
+         */
+        if ($state === 'bio') {
+            if ($text === '') {
+                $this->prompt(
+                    $message,
+                    $telegram,
+                    'Описание не может быть пустым.'
                 );
 
-                $user->profile_editing = null;
-                $user->profile_social_platform = null;
-                $user->save();
-
-                $this->showSocials($message, $telegram, $user);
                 return true;
             }
+
+            $user->bio = mb_substr($text, 0, 500);
+            $user->profile_editing = null;
+            $user->save();
+
+            $this->showProfile($message, $telegram, $user);
 
             return true;
         }
 
         /*
-         * Профиль.
+         * Социальные сети.
+         */
+        if ($state === 'social_url') {
+            $platform = $user->profile_social_platform;
+            $url = $this->normalizeSocialUrl($platform, $text);
+
+            if (!$url) {
+                $this->prompt(
+                    $message,
+                    $telegram,
+                    'Некорректный ник или ссылка. Проверь данные и попробуй снова.'
+                );
+
+                return true;
+            }
+
+            $now = now();
+
+            DB::table('telegram_user_socials')->updateOrInsert(
+                [
+                    'telegram_user_id' => $user->id,
+                    'platform' => $platform,
+                ],
+                [
+                    'url' => $url,
+                    'updated_at' => $now,
+                    'created_at' => $now,
+                ]
+            );
+
+            $user->profile_editing = null;
+            $user->profile_social_platform = null;
+            $user->save();
+
+            $this->showSocials($message, $telegram, $user);
+
+            return true;
+        }
+
+        /*
+         * Если состояние редактирования неизвестно,
+         * не перехватываем сообщение.
+         */
+        if ($state) {
+            return false;
+        }
+
+        /*
+         * Просмотр профиля.
          */
         if ($text === '👤 Профиль') {
             $this->showProfile($message, $telegram, $user);
@@ -192,45 +216,60 @@ class SettingsHandler
             return true;
         }
 
+        /*
+         * Изменение скриншота.
+         */
         if ($text === '🎮 Изменить скин') {
-            $user->profile_editing = 'game_skin';
-            $user->save();
-
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => '📸 Отправь скриншот своего персонажа из игры фотографией или изображением. Для отмены нажми «❌ Отмена».',
-                'reply_markup' => $this->cancelKeyboard(),
-            ]);
+            $this->beginProfileEdit(
+                $message,
+                $telegram,
+                $user,
+                'game_skin',
+                '📸 Отправь скриншот своего персонажа из игры фотографией или изображением. Для отмены нажми «❌ Отмена».'
+            );
 
             return true;
         }
 
+        /*
+         * Изменение описания.
+         */
         if ($text === '📝 Изменить описание') {
-            $user->profile_editing = 'bio';
-            $user->save();
-
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => 'Напиши немного о себе. Максимум 500 символов.',
-                'reply_markup' => $this->cancelKeyboard(),
-            ]);
+            $this->beginProfileEdit(
+                $message,
+                $telegram,
+                $user,
+                'bio',
+                'Напиши немного о себе. Максимум 500 символов.'
+            );
 
             return true;
         }
 
+        /*
+         * Выбор сервера.
+         */
         if ($text === '🖥 Сервер') {
-            $user->profile_editing = 'server';
-            $user->save();
+            $this->beginProfileEdit(
+                $message,
+                $telegram,
+                $user,
+                'server',
+                'Выбери сервер: 13+ или 13-.'
+            );
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' => 'Выбери сервер: 13+ или 13-.',
+                'text' => 'Выбери сервер кнопкой ниже.',
                 'reply_markup' => $this->serverKeyboard(),
             ]);
 
             return true;
         }
 
+        /*
+         * Социальные сети.
+         */
         if ($text === '📱 Социальные сети') {
             $this->showSocials($message, $telegram, $user);
             return true;
@@ -294,6 +333,7 @@ class SettingsHandler
                     ->delete();
 
                 $this->showSocials($message, $telegram, $user);
+
                 return true;
             }
         }
@@ -311,12 +351,7 @@ class SettingsHandler
             return true;
         }
 
-        if ($text === '🔔 Уведомления') {
-            $this->showNotifications($message, $telegram, $user);
-            return true;
-        }
-
-        if ($text === '💬 Уведомления чата') {
+        if ($text === '🔔 Уведомления' || $text === '💬 Уведомления чата') {
             $this->showChatNotifications($message, $telegram, $user);
             return true;
         }
@@ -326,6 +361,7 @@ class SettingsHandler
             $user->save();
 
             $this->showChatNotifications($message, $telegram, $user);
+
             return true;
         }
 
@@ -334,6 +370,7 @@ class SettingsHandler
             $user->save();
 
             $this->showChatNotifications($message, $telegram, $user);
+
             return true;
         }
 
@@ -655,11 +692,6 @@ class SettingsHandler
         ]);
     }
 
-    private function showNotifications($message, $telegram, $user): void
-    {
-        $this->showChatNotifications($message, $telegram, $user);
-    }
-
     private function showChatNotifications($message, $telegram, $user): void
     {
         $status = $user->chat_notifications
@@ -669,20 +701,15 @@ class SettingsHandler
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
             'text' => "💬 Уведомления чата\n\nСтатус: {$status}\n\nПолучать уведомления о новых сообщениях?",
-            'reply_markup' => $this->chatNotificationKeyboard(),
+            'reply_markup' => json_encode([
+                'keyboard' => [
+                    [['text' => '🟢 Включить уведомления']],
+                    [['text' => '🔴 Выключить уведомления']],
+                    [['text' => '⬅️ Назад']],
+                ],
+                'resize_keyboard' => true,
+            ], JSON_UNESCAPED_UNICODE),
         ]);
-    }
-
-    private function chatNotificationKeyboard(): string
-    {
-        return json_encode([
-            'keyboard' => [
-                [['text' => '🟢 Включить уведомления']],
-                [['text' => '🔴 Выключить уведомления']],
-                [['text' => '⬅️ Назад']],
-            ],
-            'resize_keyboard' => true,
-        ], JSON_UNESCAPED_UNICODE);
     }
 
     private function showMainMenu($message, $telegram): void
@@ -713,12 +740,15 @@ class SettingsHandler
         string $prompt
     ): void {
         $user->profile_editing = $field;
+        $user->profile_social_platform = null;
         $user->save();
 
         $telegram->sendMessage([
             'chat_id' => $message->chat->id,
             'text' => $prompt,
-            'reply_markup' => $this->cancelKeyboard(),
+            'reply_markup' => $field === 'server'
+                ? $this->serverKeyboard()
+                : $this->cancelKeyboard(),
         ]);
     }
 }
