@@ -4,19 +4,12 @@ namespace App\Services\Bot;
 
 use App\Models\TelegramUser;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
+use Throwable;
 
 class UserInfoHandler
 {
-    /**
-     * Commands:
-     *   кто я                 — show the sender's profile
-     *   кто ты                — show the profile of the replied-to user
-     *   кто @username         — find a registered user by username
-     *   /whoami               — alias for "кто я"
-     *   /who @username        — alias for "кто @username"
-     *   /whois @username      — alias for "кто @username"
-     */
     public function handle($message, Api $telegram): bool
     {
         $text = trim((string) ($message->text ?? ''));
@@ -25,7 +18,10 @@ class UserInfoHandler
             return false;
         }
 
-        // Do not consume ordinary messages that are not one of our commands.
+        $chatId = $message->chat->id;
+        $threadId = $message->message_thread_id ?? null;
+
+        // Профиль отправителя.
         if ($this->isSelfCommand($text)) {
             $telegramId = $message->from->id ?? null;
 
@@ -34,47 +30,86 @@ class UserInfoHandler
             }
 
             $user = $this->syncTelegramUser($message->from);
-            $this->sendProfile($message->chat->id, $user, $telegram);
+
+            $this->sendProfile(
+                $chatId,
+                $user,
+                $telegram,
+                $threadId
+            );
 
             return true;
         }
 
+        // Профиль пользователя, на сообщение которого ответили.
         if ($this->isReplyCommand($text)) {
             $reply = $message->reply_to_message ?? null;
-            $targetTelegramId = $reply->from->id ?? null;
+            $target = $reply->from ?? null;
+            $targetTelegramId = $target->id ?? null;
 
-            if (!$reply || !$targetTelegramId) {
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-                    'text' => "Чтобы посмотреть профиль пользователя, ответь командой «кто ты» на его сообщение.",
-                ]);
+            if (!$target || !$targetTelegramId) {
+                $this->sendMessage(
+                    $telegram,
+                    $chatId,
+                    'Ответь командой «кто ты» на сообщение пользователя.',
+                    $threadId
+                );
 
                 return true;
             }
 
-            $user = $this->syncTelegramUser($reply->from);
-            $this->sendProfile($message->chat->id, $user, $telegram);
+            // Не показываем профиль самого бота.
+            if (!empty($target->is_bot)) {
+                $this->sendMessage(
+                    $telegram,
+                    $chatId,
+                    'Нельзя показать профиль бота.',
+                    $threadId
+                );
+
+                return true;
+            }
+
+            $user = $this->syncTelegramUser($target);
+
+            $this->sendProfile(
+                $chatId,
+                $user,
+                $telegram,
+                $threadId
+            );
 
             return true;
         }
 
+        // Поиск по username.
         $username = $this->extractUsernameSearch($text);
 
         if ($username !== null) {
             $user = TelegramUser::query()
-                ->whereRaw('LOWER(username) = ?', [mb_strtolower($username)])
+                ->whereRaw(
+                    'LOWER(username) = ?',
+                    [mb_strtolower($username)]
+                )
                 ->first();
 
             if (!$user) {
-                $telegram->sendMessage([
-                    'chat_id' => $message->chat->id,
-                    'text' => "Пользователь @{$username} не найден в базе бота. Он должен хотя бы один раз написать боту или появиться в чате, где бот сохраняет пользователей.",
-                ]);
+                $this->sendMessage(
+                    $telegram,
+                    $chatId,
+                    "Пользователь @{$username} не найден в базе бота.",
+                    $threadId
+                );
 
                 return true;
             }
 
-            $this->sendProfile($message->chat->id, $user, $telegram);
+            $this->sendProfile(
+                $chatId,
+                $user,
+                $telegram,
+                $threadId
+            );
 
             return true;
         }
@@ -84,33 +119,46 @@ class UserInfoHandler
 
     private function isSelfCommand(string $text): bool
     {
-        return in_array(mb_strtolower($text), [
+        $text = mb_strtolower(trim($text));
+
+        $commands = [
             'кто я',
             '/whoami',
-            '/whoami@' . mb_strtolower((string) config('services.telegram-bot.username', '')),
-        ], true);
+        ];
+
+        $botUsername = trim(
+            (string) config('services.telegram-bot.username', '')
+        );
+
+        if ($botUsername !== '') {
+            $commands[] = '/whoami@' . mb_strtolower(
+                ltrim($botUsername, '@')
+            );
+        }
+
+        return in_array($text, $commands, true);
     }
 
     private function isReplyCommand(string $text): bool
     {
-        return in_array(mb_strtolower($text), [
+        return in_array(mb_strtolower(trim($text)), [
             'кто ты',
             '/whoyou',
         ], true);
     }
 
-    /**
-     * Returns username only for supported lookup commands, otherwise null.
-     */
     private function extractUsernameSearch(string $text): ?string
     {
-        if (!preg_match('/^(?:кто|\/who|\/whois)(?:\s+)(@?[a-zA-Z0-9_]{5,32})$/iu', $text, $matches)) {
+        if (!preg_match(
+            '/^(?:кто|\/who|\/whois)\s+(@?[a-zA-Z0-9_]{5,32})$/iu',
+            trim($text),
+            $matches
+        )) {
             return null;
         }
 
         $username = ltrim($matches[1], '@');
 
-        // "кто я" and "кто ты" are handled above, not as username searches.
         if (in_array(mb_strtolower($username), ['я', 'ты'], true)) {
             return null;
         }
@@ -118,9 +166,6 @@ class UserInfoHandler
         return $username;
     }
 
-    /**
-     * Keep Telegram's stable numeric ID as the identity key, and refresh its public name.
-     */
     private function syncTelegramUser($from): TelegramUser
     {
         $telegramId = $from->id ?? null;
@@ -134,8 +179,12 @@ class UserInfoHandler
         );
     }
 
-    private function sendProfile($chatId, TelegramUser $user, Api $telegram): void
-    {
+    private function sendProfile(
+        $chatId,
+        TelegramUser $user,
+        Api $telegram,
+        $threadId = null
+    ): void {
         $displayName = $user->username
             ? '@' . $user->username
             : ($user->first_name ?: 'Пользователь');
@@ -145,13 +194,19 @@ class UserInfoHandler
             '',
             '<b>Имя:</b> ' . $this->escape($displayName),
             '<b>Telegram ID:</b> <code>' . (int) $user->telegram_id . '</code>',
+            '<b>🎮 Скин:</b> ' . ($user->game_skin ? 'Загружен' : 'Не загружен'),
+            '<b>📝 О себе:</b> ' . (
+                trim((string) $user->bio) !== ''
+                    ? $this->escape((string) $user->bio)
+                    : 'Не заполнено'
+            ),
+            '<b>🖥 Сервер:</b> ' . (
+                in_array($user->server, ['13+', '13-'], true)
+                    ? $this->escape($user->server)
+                    : 'Не указан'
+            ),
         ];
 
-        $this->appendField($lines, '🎮 Скин', $user->game_skin ?? null);
-        $this->appendField($lines, '📝 О себе', $user->bio ?? null);
-        $this->appendField($lines, '🖥 Сервер', $user->server ?? null);
-
-        // Social links are stored by SettingsHandler in telegram_user_socials.
         try {
             $socials = DB::table('telegram_user_socials')
                 ->where('telegram_user_id', $user->id)
@@ -164,47 +219,109 @@ class UserInfoHandler
 
                 foreach ($socials as $social) {
                     $url = trim((string) ($social->url ?? ''));
+
                     if ($url === '') {
                         continue;
                     }
 
-                    $label = $this->socialLabel((string) ($social->platform ?? ''));
-                    $safeUrl = $this->escape($url);
+                    $label = $this->socialLabel(
+                        (string) ($social->platform ?? '')
+                    );
 
-                    if (filter_var($url, FILTER_VALIDATE_URL) && in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)) {
-                        $lines[] = $this->escape($label) . ': <a href="' . $safeUrl . '">открыть ссылку</a>';
+                    $scheme = strtolower(
+                        (string) parse_url($url, PHP_URL_SCHEME)
+                    );
+
+                    if (
+                        filter_var($url, FILTER_VALIDATE_URL) &&
+                        in_array($scheme, ['http', 'https'], true)
+                    ) {
+                        $lines[] = $this->escape($label)
+                            . ': <a href="'
+                            . $this->escape($url)
+                            . '">Открыть ссылку</a>';
                     } else {
-                        $lines[] = $this->escape($label) . ': ' . $safeUrl;
+                        $lines[] = $this->escape($label)
+                            . ': '
+                            . $this->escape($url);
                     }
                 }
             }
-        } catch (\Throwable $e) {
-            // A missing socials table should not prevent the basic profile from being shown.
-            report($e);
+        } catch (Throwable $e) {
+            Log::error('UserInfoHandler: failed to load socials', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
-        $telegram->sendMessage([
+        $caption = implode("\n", $lines);
+
+        $params = [
             'chat_id' => $chatId,
-            'text' => implode("\n", $lines),
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-        ]);
+        ];
+
+        // Отправляем фотографию с подписью, если скин сохранён.
+        if ($user->game_skin) {
+            $params['photo'] = $user->game_skin;
+            $params['caption'] = $caption;
+
+            if ($threadId !== null) {
+                $params['message_thread_id'] = $threadId;
+            }
+
+            try {
+                $telegram->sendPhoto($params);
+                return;
+            } catch (Throwable $e) {
+                Log::warning('UserInfoHandler: failed to send skin photo', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                // Если Telegram не принял фото, отправляем текстовый профиль.
+            }
+        }
+
+        $this->sendMessage(
+            $telegram,
+            $chatId,
+            $caption,
+            $threadId,
+            true
+        );
     }
 
-    private function appendField(array &$lines, string $label, ?string $value): void
-    {
-        $value = trim((string) $value);
+    private function sendMessage(
+        Api $telegram,
+        $chatId,
+        string $text,
+        $threadId = null,
+        bool $html = false
+    ): void {
+        $params = [
+            'chat_id' => $chatId,
+            'text' => $text,
+            'disable_web_page_preview' => true,
+        ];
 
-        if ($value !== '') {
-            $lines[] = '<b>' . $this->escape($label) . ':</b> ' . $this->escape($value);
+        if ($html) {
+            $params['parse_mode'] = 'HTML';
         }
+
+        if ($threadId !== null) {
+            $params['message_thread_id'] = $threadId;
+        }
+
+        $telegram->sendMessage($params);
     }
 
     private function socialLabel(string $platform): string
     {
         return [
             'instagram' => '📸 Instagram',
-            'telegram' => '✈️ Telegram',
+            'telegram' => '✈️ Telegram-канал',
             'tiktok' => '🎵 TikTok',
             'youtube' => '▶️ YouTube',
             'twitch' => '🎮 Twitch',
@@ -214,6 +331,10 @@ class UserInfoHandler
 
     private function escape(string $value): string
     {
-        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        return htmlspecialchars(
+            $value,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
     }
 }
