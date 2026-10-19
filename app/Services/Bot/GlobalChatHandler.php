@@ -1,8 +1,10 @@
+
 <?php
 
 namespace App\Services\Bot;
 
 use App\Jobs\GlobalChatDeliveryJob;
+use App\Models\BotSession;
 use App\Models\BotGroup;
 use App\Models\ChatMessage;
 use App\Models\ChatMessageDelivery;
@@ -108,6 +110,44 @@ class GlobalChatHandler
                     'last_name' => $lastName,
                 ]
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | ЗАЩИТА: не отправлять ввод профиля в глобальный чат
+            |--------------------------------------------------------------------------
+            */
+
+            if (!empty($telegramUser->profile_editing)) {
+                return true;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | ЗАЩИТА: не отправлять ввод игрового профиля в глобальный чат
+            |--------------------------------------------------------------------------
+            |
+            | Проверяем только шаги игрового профиля, чтобы случайные
+            | BotSession других функций не блокировали глобальный чат.
+            |--------------------------------------------------------------------------
+            */
+
+            $gameProfileSteps = [
+                'nickname',
+                'game_id',
+                'screenshot',
+                'edit_nickname',
+                'edit_game_id',
+                'edit_screenshot',
+            ];
+
+            $isEditingGameProfile = BotSession::query()
+                ->where('telegram_user_id', $telegramUser->id)
+                ->whereIn('step', $gameProfileSteps)
+                ->exists();
+
+            if ($isEditingGameProfile) {
+                return true;
+            }
 
             /*
             |--------------------------------------------------------------------------
