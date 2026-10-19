@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_app
+    container_name: sus_lobby_app
     env_file:
       - .env
     volumes:
@@ -11,11 +11,11 @@ services:
     depends_on:
       - mysql
     networks:
-      - test_bot_network
+      - sus_lobby_network
 
   nginx:
     image: nginx:latest
-    container_name: test_bot_nginx
+    container_name: sus_lobby_nginx
     ports:
       - "8080:80"
     volumes:
@@ -24,30 +24,30 @@ services:
     depends_on:
       - app
     networks:
-      - test_bot_network
+      - sus_lobby_network
 
   mysql:
     image: mariadb:10.4
-    container_name: test_bot_mysql
+    container_name: sus_lobby_mysql
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: test_bot
-      MYSQL_USER: test_bot
-      MYSQL_PASSWORD: test_password
+      MYSQL_DATABASE: sus_lobby
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD: password
       MYSQL_ROOT_PASSWORD: root
     ports:
-      - "3309:3306"
+      - "3308:3306"
     volumes:
-      - test_bot_mysql_data:/var/lib/mysql
+      - sus-lobby_mysql_data:/var/lib/mysql
     networks:
-      - test_bot_network
+      - sus_lobby_network
 
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
-    container_name: test_bot_phpmyadmin
+    container_name: sus_lobby_phpmyadmin
     restart: unless-stopped
     ports:
-      - "8082:80"
+      - "8081:80"
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
@@ -56,29 +56,31 @@ services:
     depends_on:
       - mysql
     networks:
-      - test_bot_network
+      - sus_lobby_network
 
   telegram_bot:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_bot
+    container_name: sus_lobby_bot
     command: php artisan telegram:bot
-    env_file:
-      - .env
     volumes:
       - ./:/var/www
     depends_on:
       - mysql
     restart: unless-stopped
     networks:
-      - test_bot_network
+      - sus_lobby_network
+
+  # ============================================================
+  # TELEGRAM WORKER 1
+  # ============================================================
 
   worker_telegram_1:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_worker_telegram_1
+    container_name: sus_lobby_worker_telegram_1
     command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
@@ -88,13 +90,17 @@ services:
       - mysql
     restart: unless-stopped
     networks:
-      - test_bot_network
+      - sus_lobby_network
+
+  # ============================================================
+  # TELEGRAM WORKER 2
+  # ============================================================
 
   worker_telegram_2:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_worker_telegram_2
+    container_name: sus_lobby_worker_telegram_2
     command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
@@ -104,13 +110,17 @@ services:
       - mysql
     restart: unless-stopped
     networks:
-      - test_bot_network
+      - sus_lobby_network
+
+  # ============================================================
+  # TELEGRAM WORKER 3
+  # ============================================================
 
   worker_telegram_3:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_worker_telegram_3
+    container_name: sus_lobby_worker_telegram_3
     command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
@@ -120,13 +130,17 @@ services:
       - mysql
     restart: unless-stopped
     networks:
-      - test_bot_network
+      - sus_lobby_network
+
+  # ============================================================
+  # DEFAULT WORKER
+  # ============================================================
 
   worker_default:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: test_bot_worker_default
+    container_name: sus_lobby_worker_default
     command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
@@ -136,12 +150,12 @@ services:
       - mysql
     restart: unless-stopped
     networks:
-      - test_bot_network
+      - sus_lobby_network
 
 networks:
-  test_bot_network:
+  sus_lobby_network:
     enable_ipv6: false
 
 volumes:
-  test_bot_mysql_data:
+  sus-lobby_mysql_data:
     external: true
