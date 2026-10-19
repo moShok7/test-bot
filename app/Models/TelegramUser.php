@@ -19,7 +19,7 @@ class TelegramUser extends Model
         'chat_icon',
 
         // Профиль игрока
-        'game_skin',
+        'game_skin',    
         'bio',
         'server',
 

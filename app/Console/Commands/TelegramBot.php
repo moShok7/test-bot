@@ -9,7 +9,6 @@ use App\Models\TelegramUser;
 use App\Models\BotSession;
 
 use App\Services\Bot\SettingsHandler;
-use App\Services\Bot\GameProfileHandler;
 use App\Services\Bot\AdminHandler;
 use App\Services\Bot\GlobalChatHandler;
 use App\Services\Bot\TopicAccessHandler;
@@ -42,8 +41,6 @@ class TelegramBot extends Command
         | Handlers
         |--------------------------------------------------------------------------
         */
-
-        $gameProfileHandler = new GameProfileHandler();
 
         $lobbyService = new LobbyService($telegram);
 
@@ -143,7 +140,7 @@ class TelegramBot extends Command
                                         'callback_query_id' => $callback->id,
                                     ]);
                                 } catch (\Throwable $e) {
-                                    // Callback may already have been answered.
+                                    // Callback мог быть уже обработан.
                                 }
 
                                 continue;
@@ -196,59 +193,13 @@ class TelegramBot extends Command
                                 [
                                     'username' => $user->username ?? null,
                                     'first_name' => $user->first_name ?? 'Пользователь',
-                                    'last_name' => $user->last_name ?? null,
                                 ]
                             );
                         }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | ПЕРЕХВАТ ВВОДА ИГРОВОГО ПРОФИЛЯ
-                        |--------------------------------------------------------------------------
-                        |
-                        | Пока пользователь вводит ник, ID или скриншот,
-                        | сообщение обрабатывается здесь и не доходит
-                        | до глобального чата.
-                        |--------------------------------------------------------------------------
-                        */
-
-                        if ($telegramId) {
-                            $profileGuardUser = TelegramUser::where(
-                                'telegram_id',
-                                $telegramId
-                            )->first();
-
-                            if ($profileGuardUser) {
-                                $profileGuardSteps = [
-                                    'nickname',
-                                    'game_id',
-                                    'screenshot',
-                                    'edit_nickname',
-                                    'edit_game_id',
-                                    'edit_screenshot',
-                                ];
-
-                                $profileGuardSession = BotSession::where(
-                                    'telegram_user_id',
-                                    $profileGuardUser->id
-                                )
-                                    ->whereIn('step', $profileGuardSteps)
-                                    ->first();
-
-                                if ($profileGuardSession) {
-                                    $gameProfileHandler->handle(
-                                        $message,
-                                        $telegram
-                                    );
-
-                                    continue;
-                                }
-                            }
-                        }
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Сброс старых BotSession
+                        | Сброс старых BotSession для лобби
                         |--------------------------------------------------------------------------
                         */
 
@@ -276,7 +227,12 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Настройки
+                        | Настройки и профиль игрока
+                        |--------------------------------------------------------------------------
+                        |
+                        | Обрабатываем до остальных обработчиков.
+                        | Это позволяет принять фото скина и не отправить
+                        | его в глобальный чат.
                         |--------------------------------------------------------------------------
                         */
 
@@ -286,7 +242,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Защита от попадания редактирования профиля в глобальный чат
+                        | Защита от передачи ввода профиля в другие обработчики
                         |--------------------------------------------------------------------------
                         */
 
@@ -401,7 +357,7 @@ class TelegramBot extends Command
                                         ],
                                     ],
                                     'resize_keyboard' => true,
-                                ]),
+                                ], JSON_UNESCAPED_UNICODE),
                             ]);
 
                             continue;
@@ -434,7 +390,7 @@ class TelegramBot extends Command
                                         ],
                                     ],
                                     'resize_keyboard' => true,
-                                ]),
+                                ], JSON_UNESCAPED_UNICODE),
                             ]);
 
                             continue;
@@ -482,16 +438,6 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Игровой профиль
-                        |--------------------------------------------------------------------------
-                        */
-
-                        if ($gameProfileHandler->handle($message, $telegram)) {
-                            continue;
-                        }
-
-                        /*
-                        |--------------------------------------------------------------------------
                         | Остальные функции лобби
                         |--------------------------------------------------------------------------
                         */
@@ -504,9 +450,6 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         | Информация о пользователе
                         |--------------------------------------------------------------------------
-                        |
-                        | Команды профиля не должны попадать в глобальный чат.
-                        |
                         */
 
                         if ($userInfoHandler->handle($message, $telegram)) {
