@@ -152,10 +152,6 @@ class GlobalChatHandler
             |--------------------------------------------------------------------------
             | Reply: ищем исходное сообщение по delivery
             |--------------------------------------------------------------------------
-            |
-            | telegram_message_id — ID сообщения в Telegram,
-            | telegram_user_id — внутренний ID пользователя БД.
-            |--------------------------------------------------------------------------
             */
 
             $replyToChatMessage = null;
@@ -186,14 +182,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Сохраняем сообщение в существующую схему БД
-            |--------------------------------------------------------------------------
-            |
-            | В chat_messages сейчас существуют только:
-            | id, telegram_user_id, message, created_at, updated_at.
-            |
-            | Поэтому не записываем telegram_message_id,
-            | message_type и file_id в несуществующие столбцы.
+            | Сохраняем сообщение в БД
             |--------------------------------------------------------------------------
             */
 
@@ -201,12 +190,10 @@ class GlobalChatHandler
                 ? $text
                 : '[' . $messageType . ']';
 
-            $chatMessage = ChatMessage::create(
-                [
-                    'telegram_user_id' => $telegramUser->id,
-                    'message' => $storedMessage,
-                ]
-            );
+            $chatMessage = ChatMessage::create([
+                'telegram_user_id' => $telegramUser->id,
+                'message' => $storedMessage,
+            ]);
 
             /*
             |--------------------------------------------------------------------------
@@ -231,6 +218,8 @@ class GlobalChatHandler
                 if ($replyAuthor) {
                     $replyAuthorName = trim(
                         (string) $replyAuthor->first_name
+                        . ' '
+                        . (string) $replyAuthor->last_name
                     );
 
                     if ($replyAuthorName === '') {
@@ -266,7 +255,7 @@ class GlobalChatHandler
                         'type' => 'text_link',
                         'offset' => $authorOffset,
                         'length' => $authorLength,
-                        'url' => 'tg://openmessage?user_id='
+                        'url' => 'tg://user?id='
                             . (int) $replyAuthor->telegram_id,
                     ];
 
@@ -280,13 +269,17 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Имя автора
+            | Имя автора — кликабельная ссылка
             |--------------------------------------------------------------------------
             */
 
-            $authorName = $firstName !== ''
-                ? $firstName
-                : 'Пользователь';
+            $authorName = trim(
+                $firstName . ' ' . $lastName
+            );
+
+            if ($authorName === '') {
+                $authorName = 'Пользователь';
+            }
 
             $authorOffset = $this->utf16Length($chatText);
             $authorLength = $this->utf16Length($authorName);
@@ -297,8 +290,7 @@ class GlobalChatHandler
                 'type' => 'text_link',
                 'offset' => $authorOffset,
                 'length' => $authorLength,
-                'url' => 'tg://openmessage?user_id='
-                    . $telegramUserId,
+                'url' => 'tg://user?id=' . $telegramUserId,
             ];
 
             $entities[] = [
@@ -309,15 +301,11 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Иконка пользователя и текст
+            | Текст сообщения без иконки
             |--------------------------------------------------------------------------
             */
 
-            $chatText .= "\n";
-
-            $icon = $telegramUser->chat_icon ?: '🟠';
-
-            $chatText .= $icon . ': ';
+            $chatText .= ': ';
 
             $textStartOffset = $this->utf16Length($chatText);
 
@@ -354,7 +342,7 @@ class GlobalChatHandler
                         'offset' => $textStartOffset
                             + $this->utf16Length($beforeMention),
                         'length' => $this->utf16Length($mentionValue),
-                        'url' => 'tg://openmessage?user_id='
+                        'url' => 'tg://user?id='
                             . (int) $mentionedUser->telegram_id,
                     ];
                 }

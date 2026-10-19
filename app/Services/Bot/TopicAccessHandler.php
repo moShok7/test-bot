@@ -428,7 +428,7 @@ class TopicAccessHandler
                 ->get()
             : collect();
 
-        $text = "👑 <b>ФЕЙМЫ</b>\n\n";
+        $text = "👑 <b>ФЕЙМЫ</b> 👑\n\n";
 
         if ($users->isEmpty()) {
             $text .= "Список пока пуст.\n\n";
@@ -508,24 +508,32 @@ class TopicAccessHandler
     /**
      * Формирование имени пользователя.
      */
+    
     private function formatUser(
         ?string $username,
         ?string $firstName,
         int $userId
     ): string {
-        $username = $this->normalizeUsername($username);
-        $firstName = $this->cleanName($firstName);
+        $username = trim((string) $username);
+        $firstName = trim((string) $firstName);
 
-        if ($username !== null) {
-            $name = '@' . $username;
-        } elseif ($firstName !== null) {
+        if ($username !== '') {
+            $name = '@' . ltrim($username, '@');
+        } elseif ($firstName !== '') {
             $name = $firstName;
         } else {
             $name = 'ID: ' . $userId;
         }
 
-        return $this->escapeHtml($name);
+        $name = htmlspecialchars(
+            $name,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
+
+        return '<a href="tg://user?id=' . $userId . '">' . $name . '</a>';
     }
+
 
     private function normalizeUsername($username): ?string
     {
