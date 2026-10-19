@@ -101,36 +101,53 @@ class SettingsHandler
         /*
          * Сохранение сервера 13+ / 13-.
          */
-        if ($state === 'server') {
-            if (!in_array($text, ['13+', '13-'], true)) {
-                $telegram->sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => 'Выбери сервер кнопкой 13+ или 13-.',
-                    'reply_markup' => $this->serverKeyboard(),
-                ]);
+        /*
+ * Сохранение сервера 13+ / 13-.
+ */
+if ($state === 'server') {
+    if (!in_array($text, ['13+', '13-'], true)) {
+        $params = [
+            'chat_id' => $chatId,
+            'text' => 'Выбери сервер кнопкой 13+ или 13-.',
+            'reply_markup' => $this->serverKeyboard(),
+        ];
 
-                return true;
-            }
+        $threadId = $message->message_thread_id ?? null;
 
-            DB::table('telegram_users')
-                ->where('id', $user->id)
-                ->update([
-                    'server' => $text,
-                    'profile_editing' => null,
-                    'updated_at' => now(),
-                ]);
-
-            $user->refresh();
-
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => "✅ Сервер {$text} сохранён.",
-            ]);
-
-            $this->showProfile($message, $telegram, $user);
-
-            return true;
+        if ($threadId !== null) {
+            $params['message_thread_id'] = $threadId;
         }
+
+        $telegram->sendMessage($params);
+
+        return true;
+    }
+
+    $user->server = $text;
+    $user->profile_editing = null;
+    $user->profile_social_platform = null;
+    $user->save();
+
+    $params = [
+        'chat_id' => $chatId,
+        'text' => "✅ Сервер {$text} сохранён.",
+        'reply_markup' => json_encode([
+            'remove_keyboard' => true,
+        ], JSON_UNESCAPED_UNICODE),
+    ];
+
+    $threadId = $message->message_thread_id ?? null;
+
+    if ($threadId !== null) {
+        $params['message_thread_id'] = $threadId;
+    }
+
+    $telegram->sendMessage($params);
+
+    $this->showProfile($message, $telegram, $user);
+
+    return true;
+}
 
         /*
          * Описание профиля.

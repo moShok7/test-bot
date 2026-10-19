@@ -206,6 +206,7 @@ class UserInfoHandler
                 ->where('telegram_user_id', $user->id)
                 ->get();
 
+            
             foreach ($socials as $social) {
                 $platform = $social->platform ?? null;
                 $url = trim((string) ($social->url ?? ''));
@@ -214,24 +215,24 @@ class UserInfoHandler
                     continue;
                 }
 
-                $label = $this->socialLabel($platform);
-
-                // Проверяем URL и выводим его как обычную кликабельную ссылку.
                 if (!filter_var($url, FILTER_VALIDATE_URL)) {
                     continue;
                 }
 
-                $scheme = strtolower(
-                    (string) parse_url($url, PHP_URL_SCHEME)
-                );
+                $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
 
                 if (!in_array($scheme, ['http', 'https'], true)) {
                     continue;
                 }
 
+                $label = $this->socialLabel($platform);
+
                 $lines[] = '<b>' . $this->escape($label) . ':</b> '
-                    . $this->escape($url);
+                    . '<a href="' . $this->escape($url) . '">'
+                    . $this->escape($url)
+                    . '</a>';
             }
+
         } catch (Throwable $e) {
             Log::warning('UserInfoHandler: failed to load social links', [
                 'telegram_id' => $user->telegram_id,
