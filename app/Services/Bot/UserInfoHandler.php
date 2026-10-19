@@ -21,15 +21,16 @@ class UserInfoHandler
         $chatId = $message->chat->id;
         $threadId = $message->message_thread_id ?? null;
 
-        // Профиль отправителя.
+        // Показать собственный профиль.
         if ($this->isSelfCommand($text)) {
-            $telegramId = $message->from->id ?? null;
+            $telegramUser = $message->from ?? null;
+            $telegramId = $telegramUser->id ?? null;
 
             if (!$telegramId) {
                 return true;
             }
 
-            $user = $this->syncTelegramUser($message->from);
+            $user = $this->syncTelegramUser($telegramUser);
 
             $this->sendProfile(
                 $chatId,
@@ -41,13 +42,13 @@ class UserInfoHandler
             return true;
         }
 
-        // Профиль пользователя, на сообщение которого ответили.
+        // Показать профиль пользователя, на сообщение которого ответили.
         if ($this->isReplyCommand($text)) {
             $reply = $message->reply_to_message ?? null;
             $target = $reply->from ?? null;
-            $targetTelegramId = $target->id ?? null;
+            $targetId = $target->id ?? null;
 
-            if (!$target || !$targetTelegramId) {
+            if (!$target || !$targetId) {
                 $this->sendMessage(
                     $telegram,
                     $chatId,
@@ -58,7 +59,6 @@ class UserInfoHandler
                 return true;
             }
 
-            // Не показываем профиль самого бота.
             if (!empty($target->is_bot)) {
                 $this->sendMessage(
                     $telegram,
@@ -87,10 +87,7 @@ class UserInfoHandler
 
         if ($username !== null) {
             $user = TelegramUser::query()
-                ->whereRaw(
-                    'LOWER(username) = ?',
-                    [mb_strtolower($username)]
-                )
+                ->whereRaw('LOWER(username) = ?', [mb_strtolower($username)])
                 ->first();
 
             if (!$user) {
@@ -141,10 +138,11 @@ class UserInfoHandler
 
     private function isReplyCommand(string $text): bool
     {
-        return in_array(mb_strtolower(trim($text)), [
-            'кто ты',
-            '/whoyou',
-        ], true);
+        return in_array(
+            mb_strtolower(trim($text)),
+            ['кто ты', '/whoyou'],
+            true
+        );
     }
 
     private function extractUsernameSearch(string $text): ?string
@@ -168,10 +166,8 @@ class UserInfoHandler
 
     private function syncTelegramUser($from): TelegramUser
     {
-        $telegramId = $from->id ?? null;
-
         return TelegramUser::updateOrCreate(
-            ['telegram_id' => $telegramId],
+            ['telegram_id' => $from->id],
             [
                 'username' => $from->username ?? null,
                 'first_name' => $from->first_name ?? 'Пользователь',
@@ -194,93 +190,80 @@ class UserInfoHandler
             '',
             '<b>Имя:</b> ' . $this->escape($displayName),
             '<b>Telegram ID:</b> <code>' . (int) $user->telegram_id . '</code>',
-            '<b>🎮 Скин:</b> ' . ($user->game_skin ? 'Загружен' : 'Не загружен'),
-            '<b>📝 О себе:</b> ' . (
-                trim((string) $user->bio) !== ''
+            '<b>📝 О себе:</b> ' .
+                (trim((string) $user->bio) !== ''
                     ? $this->escape((string) $user->bio)
-                    : 'Не заполнено'
-            ),
-            '<b>🖥 Сервер:</b> ' . (
-                in_array($user->server, ['13+', '13-'], true)
+                    : 'Не заполнено'),
+            '<b>🖥 Сервер:</b> ' .
+                (in_array($user->server, ['13+', '13-'], true)
                     ? $this->escape($user->server)
-                    : 'Не указан'
-            ),
+                    : 'Не указан'),
         ];
 
+        // Социальные ссылки из telegram_user_socials.
         try {
             $socials = DB::table('telegram_user_socials')
                 ->where('telegram_user_id', $user->id)
-                ->orderBy('id')
                 ->get();
 
-            if ($socials->isNotEmpty()) {
-                $lines[] = '';
-                $lines[] = '<b>📱 Социальные сети</b>';
+            foreach ($socials as $social) {
+                $platform = $social->platform ?? null;
+                $url = trim((string) ($social->url ?? ''));
 
-                foreach ($socials as $social) {
-                    $url = trim((string) ($social->url ?? ''));
-
-                    if ($url === '') {
-                        continue;
-                    }
-
-                    $label = $this->socialLabel(
-                        (string) ($social->platform ?? '')
-                    );
-
-                    $scheme = strtolower(
-                        (string) parse_url($url, PHP_URL_SCHEME)
-                    );
-
-                    if (
-                        filter_var($url, FILTER_VALIDATE_URL) &&
-                        in_array($scheme, ['http', 'https'], true)
-                    ) {
-                        $lines[] = $this->escape($label)
-                            . ': <a href="'
-                            . $this->escape($url)
-                            . '">Открыть ссылку</a>';
-                    } else {
-                        $lines[] = $this->escape($label)
-                            . ': '
-                            . $this->escape($url);
-                    }
+                if (!$platform || $url === '') {
+                    continue;
                 }
+
+                $label = $this->socialLabel($platform);
+
+                // Проверяем URL и выводим его как обычную кликабельную ссылку.
+                if (!filter_var($url, FILTER_VALIDATE_URL)) {
+                    continue;
+                }
+
+                $scheme = strtolower(
+                    (string) parse_url($url, PHP_URL_SCHEME)
+                );
+
+                if (!in_array($scheme, ['http', 'https'], true)) {
+                    continue;
+                }
+
+                $lines[] = '<b>' . $this->escape($label) . ':</b> '
+                    . $this->escape($url);
             }
         } catch (Throwable $e) {
-            Log::error('UserInfoHandler: failed to load socials', [
-                'user_id' => $user->id,
+            Log::warning('UserInfoHandler: failed to load social links', [
+                'telegram_id' => $user->telegram_id,
                 'error' => $e->getMessage(),
             ]);
         }
 
         $caption = implode("\n", $lines);
 
-        $params = [
-            'chat_id' => $chatId,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
-
-        // Отправляем фотографию с подписью, если скин сохранён.
-        if ($user->game_skin) {
-            $params['photo'] = $user->game_skin;
-            $params['caption'] = $caption;
-
-            if ($threadId !== null) {
-                $params['message_thread_id'] = $threadId;
-            }
-
+        // Если скин загружен, отправляем сам скриншот.
+        // Текст «🎮 Скин: Загружен» в профиле не показываем.
+        if (!empty($user->game_skin)) {
             try {
-                $telegram->sendPhoto($params);
+                $photoParams = [
+                    'chat_id' => $chatId,
+                    'photo' => $user->game_skin,
+                    'caption' => $caption,
+                    'parse_mode' => 'HTML',
+                ];
+
+                if ($threadId !== null) {
+                    $photoParams['message_thread_id'] = $threadId;
+                }
+
+                $telegram->sendPhoto($photoParams);
+
                 return;
             } catch (Throwable $e) {
-                Log::warning('UserInfoHandler: failed to send skin photo', [
-                    'user_id' => $user->id,
+                Log::warning('UserInfoHandler: failed to send game skin', [
+                    'telegram_id' => $user->telegram_id,
                     'error' => $e->getMessage(),
                 ]);
-
-                // Если Telegram не принял фото, отправляем текстовый профиль.
             }
         }
 
@@ -319,14 +302,17 @@ class UserInfoHandler
 
     private function socialLabel(string $platform): string
     {
-        return [
-            'instagram' => '📸 Instagram',
-            'telegram' => '✈️ Telegram-канал',
-            'tiktok' => '🎵 TikTok',
-            'youtube' => '▶️ YouTube',
-            'twitch' => '🎮 Twitch',
-            'other' => '🔗 Другая ссылка',
-        ][$platform] ?? $platform;
+        $labels = [
+            'instagram' => 'Instagram',
+            'telegram' => 'Telegram',
+            'telegram_channel' => 'Telegram',
+            'tiktok' => 'TikTok',
+            'youtube' => 'YouTube',
+            'twitch' => 'Twitch',
+            'other_link' => 'Другая ссылка',
+        ];
+
+        return $labels[$platform] ?? $platform;
     }
 
     private function escape(string $value): string
