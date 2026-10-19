@@ -34,10 +34,7 @@ class GlobalChatHandler
             |--------------------------------------------------------------------------
             */
 
-            if (
-                $chatType === 'group'
-                || $chatType === 'supergroup'
-            ) {
+            if ($chatType === 'group' || $chatType === 'supergroup') {
                 try {
                     BotGroup::updateOrCreate(
                         ['chat_id' => $chatId],
@@ -113,9 +110,7 @@ class GlobalChatHandler
             */
 
             $telegramUser = TelegramUser::updateOrCreate(
-                [
-                    'telegram_id' => $telegramUserId,
-                ],
+                ['telegram_id' => $telegramUserId],
                 [
                     'username' => $username,
                     'first_name' => $firstName,
@@ -150,7 +145,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Reply: ищем исходное сообщение по delivery
+            | Reply: поиск исходного сообщения
             |--------------------------------------------------------------------------
             */
 
@@ -159,8 +154,7 @@ class GlobalChatHandler
             $replyMessage = $message->getReplyToMessage();
 
             if ($replyMessage) {
-                $replyTelegramMessageId = (int)
-                    $replyMessage->getMessageId();
+                $replyTelegramMessageId = (int) $replyMessage->getMessageId();
 
                 $delivery = ChatMessageDelivery::query()
                     ->where(
@@ -182,7 +176,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Сохраняем сообщение в БД
+            | Сохранение сообщения в БД
             |--------------------------------------------------------------------------
             */
 
@@ -197,7 +191,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Собираем сообщение для рассылки
+            | Формирование сообщения для рассылки
             |--------------------------------------------------------------------------
             */
 
@@ -206,7 +200,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Блок ответа
+            | Блок ответа на сообщение
             |--------------------------------------------------------------------------
             */
 
@@ -244,8 +238,7 @@ class GlobalChatHandler
                         $replyAuthorName
                     );
 
-                    $chatText .=
-                        $replyPrefix
+                    $chatText .= $replyPrefix
                         . $replyAuthorName
                         . "\n"
                         . $replyText
@@ -273,9 +266,7 @@ class GlobalChatHandler
             |--------------------------------------------------------------------------
             */
 
-            $authorName = trim(
-                $firstName . ' ' . $lastName
-            );
+            $authorName = trim($firstName . ' ' . $lastName);
 
             if ($authorName === '') {
                 $authorName = 'Пользователь';
@@ -299,12 +290,7 @@ class GlobalChatHandler
                 'length' => $authorLength,
             ];
 
-            /*
-            |--------------------------------------------------------------------------
-            | Текст сообщения без иконки
-            |--------------------------------------------------------------------------
-            */
-
+            // Формат: Имя: сообщение — без значка перед именем.
             $chatText .= ': ';
 
             $textStartOffset = $this->utf16Length($chatText);
@@ -313,7 +299,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Упоминания @username
+            | Упоминания @username — кликабельные ссылки
             |--------------------------------------------------------------------------
             */
 
@@ -350,7 +336,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Отправляем задачу в очередь telegram
+            | Отправка задачи в очередь Telegram
             |--------------------------------------------------------------------------
             */
 
