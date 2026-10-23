@@ -346,14 +346,14 @@ class TelegramBot extends Command
                         | сообщение обработчику премьерных лобби.
                         |--------------------------------------------------------------------------
                         */
+                        if ($premierLobbyHandler->handle($message, $telegram)) {
+                            continue;
+                        }
 
                         if ($createLobbyHandler->handle($message, $telegram)) {
                             continue;
                         }
 
-                        if ($premierLobbyHandler->handle($message, $telegram)) {
-                            continue;
-                        }
 
                         /*
                         |--------------------------------------------------------------------------
