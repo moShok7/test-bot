@@ -19,6 +19,7 @@ use App\Services\Bot\Lobby\KickPlayerHandler;
 use App\Services\Bot\Lobby\LobbyService;
 use App\Services\Bot\Lobby\CreateLobbyHandler;
 use App\Services\Bot\Lobby\PremierLobbyHandler;
+use App\Services\Bot\Lobby\PremierLobbyApplicationHandler;
 use App\Services\Bot\Lobby\SearchLobbyHandler;
 use App\Services\Bot\Lobby\JoinLobbyHandler;
 
@@ -35,18 +36,13 @@ class TelegramBot extends Command
     {
         $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
 
-        /*
-        |--------------------------------------------------------------------------
-        | Handlers
-        |--------------------------------------------------------------------------
-        */
-
         $lobbyService = new LobbyService($telegram);
 
         $settingsHandler = new SettingsHandler();
         $lobbyHandler = new LobbyHandler($lobbyService);
         $createLobbyHandler = new CreateLobbyHandler();
         $premierLobbyHandler = new PremierLobbyHandler();
+        $premierApplicationHandler = new PremierLobbyApplicationHandler();
         $searchLobbyHandler = new SearchLobbyHandler();
         $joinLobbyHandler = new JoinLobbyHandler();
         $kickPlayerHandler = new KickPlayerHandler();
@@ -55,24 +51,12 @@ class TelegramBot extends Command
         $topicAccessHandler = new TopicAccessHandler();
         $adminHandler = new AdminHandler();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Clan handlers
-        |--------------------------------------------------------------------------
-        */
-
         $clanHandler = new ClanHandler();
         $clanModerationService = new ClanModerationService();
 
         $this->info('Bot started');
 
         $offset = 0;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Основной цикл
-        |--------------------------------------------------------------------------
-        */
 
         while (true) {
             try {
@@ -95,7 +79,7 @@ class TelegramBot extends Command
 
                         if ($update->callbackQuery) {
                             $callback = $update->callbackQuery;
-                            $callbackData = $callback->data ?? '';
+                            $callbackData = (string) ($callback->data ?? '');
 
                             if (str_starts_with($callbackData, 'clan_')) {
                                 if ($clanHandler->handleCallback($callback, $telegram)) {
@@ -134,6 +118,21 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            /*
+                            |--------------------------------------------------------------------------
+                            | PREMIER LOBBY APPLICATIONS
+                            |--------------------------------------------------------------------------
+                            */
+
+                            if (
+                                $premierApplicationHandler->handleCallback(
+                                    $callback,
+                                    $telegram
+                                )
+                            ) {
+                                continue;
+                            }
+
                             $adminHandler->handleCallback($callback, $telegram);
 
                             continue;
@@ -141,7 +140,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Обычное сообщение
+                        | ORDINARY MESSAGE
                         |--------------------------------------------------------------------------
                         */
 
@@ -153,11 +152,15 @@ class TelegramBot extends Command
 
                         $text = trim((string) ($message->text ?? ''));
                         $telegramId = $message->from->id ?? null;
-                        $chatId = $message->chat->id;
+                        $chatId = $message->chat->id ?? null;
+
+                        if (!$chatId) {
+                            continue;
+                        }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Доступ к темам Telegram
+                        | TELEGRAM TOPIC ACCESS
                         |--------------------------------------------------------------------------
                         */
 
@@ -167,7 +170,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Автоматическая авторизация
+                        | AUTOMATIC AUTHORIZATION
                         |--------------------------------------------------------------------------
                         */
 
@@ -185,7 +188,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Сброс сессии
+                        | RESET SESSION
                         |--------------------------------------------------------------------------
                         */
 
@@ -213,7 +216,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Настройки и профиль
+                        | SETTINGS
                         |--------------------------------------------------------------------------
                         */
 
@@ -237,7 +240,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | DEEP LINK ЛОББИ
+                        | LOBBY DEEP LINK
                         |--------------------------------------------------------------------------
                         */
 
@@ -248,7 +251,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | DEEP LINK КЛАНА
+                        | CLAN DEEP LINK
                         |--------------------------------------------------------------------------
                         */
 
@@ -259,7 +262,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Кланы
+                        | CLANS
                         |--------------------------------------------------------------------------
                         */
 
@@ -318,7 +321,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Главное / игровое меню
+                        | MAIN / GAME MENU
                         |--------------------------------------------------------------------------
                         */
 
@@ -338,14 +341,14 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | СОЗДАНИЕ ОБЫЧНОГО И ПРЕМЬЕРНОГО ЛОББИ
+                        | CREATE REGULAR OR PREMIER LOBBY
                         |--------------------------------------------------------------------------
                         |
-                        | Сначала обычный обработчик.
-                        | Если он не обработал премьерную кнопку, передаём
-                        | сообщение обработчику премьерных лобби.
+                        | Premier handler must run first so it can continue
+                        | an existing premier creation session.
                         |--------------------------------------------------------------------------
                         */
+
                         if ($premierLobbyHandler->handle($message, $telegram)) {
                             continue;
                         }
@@ -354,10 +357,9 @@ class TelegramBot extends Command
                             continue;
                         }
 
-
                         /*
                         |--------------------------------------------------------------------------
-                        | ПОИСК ЛОББИ
+                        | SEARCH LOBBIES
                         |--------------------------------------------------------------------------
                         */
 
@@ -367,7 +369,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | ВХОД В ЛОББИ / ПРИГЛАШЕНИЯ
+                        | JOIN LOBBY / INVITATIONS
                         |--------------------------------------------------------------------------
                         */
 
@@ -377,7 +379,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Администратор
+                        | ADMIN
                         |--------------------------------------------------------------------------
                         */
 
@@ -387,7 +389,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Остальные функции лобби
+                        | OTHER LOBBY FEATURES
                         |--------------------------------------------------------------------------
                         */
 
@@ -397,7 +399,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Информация о пользователе
+                        | USER INFORMATION
                         |--------------------------------------------------------------------------
                         */
 
@@ -407,7 +409,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Глобальный чат
+                        | GLOBAL CHAT
                         |--------------------------------------------------------------------------
                         */
 
@@ -436,14 +438,11 @@ class TelegramBot extends Command
         }
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Главное меню
-    |--------------------------------------------------------------------------
-    */
-
-    private function sendMainMenu(Api $telegram, $chatId, string $title): void
-    {
+    private function sendMainMenu(
+        Api $telegram,
+        $chatId,
+        string $title
+    ): void {
         $telegram->sendMessage([
             'chat_id' => $chatId,
             'text' => $title,

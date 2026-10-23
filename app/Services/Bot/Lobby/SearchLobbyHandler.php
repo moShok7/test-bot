@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Services\Bot\Lobby;
@@ -5,18 +6,13 @@ namespace App\Services\Bot\Lobby;
 use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
+use App\Models\PremierLobby;
 
 class SearchLobbyHandler
 {
     public function handle($message, $telegram): bool
     {
-        $text = trim($message->text ?? '');
-
-        /*
-        |--------------------------------------------------------------------------
-        | Обрабатываем только кнопки поиска
-        |--------------------------------------------------------------------------
-        */
+        $text = trim((string) ($message->text ?? ''));
 
         if (
             $text !== '🔍 Найти лобби' &&
@@ -32,12 +28,6 @@ class SearchLobbyHandler
             return false;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Получаем TelegramUser
-        |--------------------------------------------------------------------------
-        */
-
         $telegramUser = TelegramUser::where(
             'telegram_id',
             $telegramId
@@ -47,66 +37,32 @@ class SearchLobbyHandler
             return false;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Удаляем сессию создания лобби
-        |--------------------------------------------------------------------------
-        */
-
+        // Сбрасываем незавершённую сессию создания лобби.
         BotSession::where(
             'telegram_user_id',
             $telegramUser->id
         )->delete();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Ищем доступные лобби
-        |--------------------------------------------------------------------------
-        */
-
-        $lobbies = Lobby::where(
-            'status',
-            'waiting'
-        )
-        ->where(
-            'creator_id',
-            '!=',
-            $telegramUser->id
-        )
-        ->with('creator')
-        ->withCount('players')
-        ->latest()
-        ->limit(10)
-        ->get();
-
         $found = false;
 
         /*
         |--------------------------------------------------------------------------
-        | Показываем лобби
+        | Обычные лобби
         |--------------------------------------------------------------------------
         */
 
+        $lobbies = Lobby::where('status', 'waiting')
+            ->where('creator_id', '!=', $telegramUser->id)
+            ->with('creator')
+            ->withCount('players')
+            ->latest()
+            ->limit(10)
+            ->get();
+
         foreach ($lobbies as $lobby) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Пропускаем заполненные лобби
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $lobby->players_count >=
-                $lobby->max_players
-            ) {
+            if ($lobby->players_count >= $lobby->max_players) {
                 continue;
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Если у лобби ещё нет кода игры
-            |--------------------------------------------------------------------------
-            */
 
             if (empty($lobby->game_room_code)) {
                 continue;
@@ -114,162 +70,183 @@ class SearchLobbyHandler
 
             $found = true;
 
-            /*
-            |--------------------------------------------------------------------------
-            | Имя хоста
-            |--------------------------------------------------------------------------
-            */
+            $hostNickname = $lobby->creator?->first_name
+                ?: (
+                    $lobby->creator?->username
+                        ? '@' . $lobby->creator->username
+                        : 'Игрок'
+                );
 
-            $hostNickname = 'Игрок';
-
-            if ($lobby->creator) {
-
-                if (
-                    !empty(
-                        $lobby->creator->first_name
-                    )
-                ) {
-
-                    $hostNickname =
-                        $lobby->creator->first_name;
-
-                } elseif (
-                    !empty(
-                        $lobby->creator->username
-                    )
-                ) {
-
-                    $hostNickname =
-                        '@' .
-                        $lobby->creator->username;
-                }
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Прямая ссылка в игру
-            |--------------------------------------------------------------------------
-            */
-
-            $gameLink =
-                "https://play.suspects.io/?code=" .
-                $lobby->game_room_code;
-
-            /*
-            |--------------------------------------------------------------------------
-            | Отправляем лобби
-            |--------------------------------------------------------------------------
-            */
+            $gameLink = 'https://play.suspects.io/?code='
+                . $lobby->game_room_code;
 
             $telegram->sendMessage([
-                'chat_id' =>
-                    $chatId,
-
+                'chat_id' => $chatId,
                 'text' =>
-                    "🎮 Лобби #{$lobby->id}\n" .
-                    "👑 Хост: {$hostNickname}\n" .
-                    "👥 Игроки: {$lobby->players_count}/{$lobby->max_players}\n" .
-                    "🔑 Код: {$lobby->game_room_code}\n" .
-                    "⏳ Ожидание игроков",
-
+                    "🎮 Обычное лобби #{$lobby->id}\n"
+                    . "👑 Хост: {$hostNickname}\n"
+                    . "👥 Игроки: {$lobby->players_count}/{$lobby->max_players}\n"
+                    . "🔑 Код: {$lobby->game_room_code}\n"
+                    . "⏳ Ожидание игроков",
                 'reply_markup' => json_encode([
                     'inline_keyboard' => [
                         [
                             [
-                                'text' =>
-                                    '🎮 Войти в игру',
-
-                                'url' =>
-                                    $gameLink,
+                                'text' => '🎮 Войти в игру',
+                                'url' => $gameLink,
                             ],
                         ],
                         [
                             [
-                                'text' =>
-                                    '📋 Скопировать код',
-
+                                'text' => '📋 Скопировать код',
                                 'copy_text' => [
-                                    'text' =>
-                                        $lobby->game_room_code,
+                                    'text' => $lobby->game_room_code,
                                 ],
                             ],
                         ],
                     ],
-                ]),
+                ], JSON_UNESCAPED_UNICODE),
             ]);
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Если лобби не найдены
+        | Премьерные лобби
         |--------------------------------------------------------------------------
         */
 
-        if (!$found) {
+        $premierLobbies = PremierLobby::where('status', 'published')
+            ->where('creator_id', '!=', $telegramUser->id)
+            ->where('starts_at', '>', now())
+            ->with([
+                'creator',
+                'applications' => function ($query) use ($telegramUser) {
+                    $query->where(
+                        'telegram_user_id',
+                        $telegramUser->id
+                    );
+                },
+            ])
+            ->orderBy('starts_at')
+            ->limit(50)
+            ->get();
 
-            $telegram->sendMessage([
-                'chat_id' =>
-                    $chatId,
+        $shownPremierCount = 0;
 
+        foreach ($premierLobbies as $lobby) {
+            if ($shownPremierCount >= 10) {
+                break;
+            }
+
+            // Учитываем место организатора в общем лимите.
+            if (!$lobby->hasAvailableSlots()) {
+                continue;
+            }
+
+            $found = true;
+            $shownPremierCount++;
+
+            $hostNickname = $lobby->creator?->first_name
+                ?: (
+                    $lobby->creator?->username
+                        ? '@' . $lobby->creator->username
+                        : 'Игрок'
+                );
+
+            $startsAt = $lobby->starts_at
+                ? $lobby->starts_at->format('d.m.Y H:i')
+                : 'Время не указано';
+
+            $description = trim((string) $lobby->description);
+
+            if ($description === '') {
+                $description = 'Описание не указано.';
+            }
+
+            if (mb_strlen($description) > 1500) {
+                $description = mb_substr($description, 0, 1500) . '…';
+            }
+
+            // Получаем существующую заявку пользователя.
+            $application = $lobby->applications->first();
+
+            $keyboard = [];
+            $applicationMessage =
+                'Нажмите кнопку ниже, чтобы отправить заявку организатору.';
+
+            if (!$application) {
+                $keyboard[] = [
+                    [
+                        'text' => '📝 Подать заявку',
+                        'callback_data' => 'premier_apply_' . $lobby->id,
+                    ],
+                ];
+            } else {
+                switch ($application->status) {
+                    case 'pending':
+                        $applicationMessage =
+                            '⏳ Ваша заявка ожидает рассмотрения организатором.';
+                        break;
+
+                    case 'approved':
+                        $applicationMessage =
+                            '✅ Ваша заявка одобрена организатором.';
+                        break;
+
+                    case 'rejected':
+                        $applicationMessage =
+                            '❌ Ваша заявка была отклонена организатором.';
+                        break;
+
+                    default:
+                        $applicationMessage =
+                            'Вы уже отправляли заявку на это лобби.';
+                        break;
+                }
+            }
+
+            $payload = [
+                'chat_id' => $chatId,
                 'text' =>
-                    "😔 Сейчас нет доступных лобби.",
-            ]);
+                    "🎬 ПРЕМЬЕРНОЕ ЛОББИ #{$lobby->id}\n\n"
+                    . "🎞 Название: {$lobby->title}\n"
+                    . "📝 Описание: {$description}\n"
+                    . "👑 Организатор: {$hostNickname}\n"
+                    . "🗓 Начало: {$startsAt}\n"
+                    . "👥 Максимум участников: {$lobby->max_players}\n\n"
+                    . $applicationMessage,
+            ];
+
+            // Не передаём пустую inline-клавиатуру.
+            if (!empty($keyboard)) {
+                $payload['reply_markup'] = json_encode([
+                    'inline_keyboard' => $keyboard,
+                ], JSON_UNESCAPED_UNICODE);
+            }
+
+            $telegram->sendMessage($payload);
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Меню после поиска
+        | Результат поиска
         |--------------------------------------------------------------------------
         */
 
         $telegram->sendMessage([
-            'chat_id' =>
-                $chatId,
-
-            'text' =>
-                "🔍 Поиск завершён.\n\n" .
-
-                (
-                    $found
-                        ? "Выберите подходящее лобби выше."
-                        : "😔 Активных лобби пока нет.\n\n" .
-                          "Вы можете создать своё лобби и ждать игроков."
-                ),
-
+            'chat_id' => $chatId,
+            'text' => $found
+                ? "🔍 Поиск завершён.\n\nВыше показаны доступные обычные и премьерные лобби."
+                : "😔 Сейчас нет доступных лобби.\n\nВы можете создать своё лобби и ждать игроков.",
             'reply_markup' => json_encode([
                 'keyboard' => [
-
-                    [
-                        [
-                            'text' =>
-                                '🔄 Обновить поиск',
-                        ],
-                    ],
-
-                    [
-                        [
-                            'text' =>
-                                '➕ Создать лобби',
-                        ],
-                    ],
-
-                    [
-                        [
-                            'text' =>
-                                '🎮 Моё лобби',
-                        ],
-                    ],
-
-                    [
-                        [
-                            'text' =>
-                                '⬅️ Главное меню',
-                        ],
-                    ],
+                    [['text' => '🔄 Обновить поиск']],
+                    [['text' => '➕ Создать лобби']],
+                    [['text' => '🎮 Моё лобби']],
+                    [['text' => '⬅️ Главное меню']],
                 ],
-
                 'resize_keyboard' => true,
-            ]),
+            ], JSON_UNESCAPED_UNICODE),
         ]);
 
         return true;
