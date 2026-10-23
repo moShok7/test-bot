@@ -9,6 +9,7 @@ class BotSession extends Model
     protected $fillable = [
         'telegram_user_id',
         'step',
+        'data',
         'temp_game_nickname',
         'temp_game_id',
         'change_lobby_code',
