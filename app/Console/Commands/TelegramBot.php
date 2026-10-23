@@ -18,6 +18,7 @@ use App\Services\Bot\Lobby\LobbyHandler;
 use App\Services\Bot\Lobby\KickPlayerHandler;
 use App\Services\Bot\Lobby\LobbyService;
 use App\Services\Bot\Lobby\CreateLobbyHandler;
+use App\Services\Bot\Lobby\PremierLobbyHandler;
 use App\Services\Bot\Lobby\SearchLobbyHandler;
 use App\Services\Bot\Lobby\JoinLobbyHandler;
 
@@ -32,9 +33,7 @@ class TelegramBot extends Command
 
     public function handle()
     {
-        $telegram = new Api(
-            env('TELEGRAM_BOT_TOKEN')
-        );
+        $telegram = new Api(env('TELEGRAM_BOT_TOKEN'));
 
         /*
         |--------------------------------------------------------------------------
@@ -45,23 +44,15 @@ class TelegramBot extends Command
         $lobbyService = new LobbyService($telegram);
 
         $settingsHandler = new SettingsHandler();
-
         $lobbyHandler = new LobbyHandler($lobbyService);
-
         $createLobbyHandler = new CreateLobbyHandler();
-
+        $premierLobbyHandler = new PremierLobbyHandler();
         $searchLobbyHandler = new SearchLobbyHandler();
-
         $joinLobbyHandler = new JoinLobbyHandler();
-
         $kickPlayerHandler = new KickPlayerHandler();
-
         $globalChatHandler = new GlobalChatHandler();
-
         $userInfoHandler = new UserInfoHandler();
-
         $topicAccessHandler = new TopicAccessHandler();
-
         $adminHandler = new AdminHandler();
 
         /*
@@ -71,7 +62,6 @@ class TelegramBot extends Command
         */
 
         $clanHandler = new ClanHandler();
-
         $clanModerationService = new ClanModerationService();
 
         $this->info('Bot started');
@@ -105,7 +95,6 @@ class TelegramBot extends Command
 
                         if ($update->callbackQuery) {
                             $callback = $update->callbackQuery;
-
                             $callbackData = $callback->data ?? '';
 
                             if (str_starts_with($callbackData, 'clan_')) {
@@ -129,7 +118,6 @@ class TelegramBot extends Command
                                 $message = $callback->message;
 
                                 $message['from'] = $callback->from;
-
                                 $message['text'] = '🚪 Войти #' .
                                     str_replace('join_lobby_', '', $callbackData);
 
@@ -164,8 +152,8 @@ class TelegramBot extends Command
                         }
 
                         $text = trim((string) ($message->text ?? ''));
-
                         $telegramId = $message->from->id ?? null;
+                        $chatId = $message->chat->id;
 
                         /*
                         |--------------------------------------------------------------------------
@@ -187,9 +175,7 @@ class TelegramBot extends Command
 
                         if ($user && $user->id) {
                             TelegramUser::updateOrCreate(
-                                [
-                                    'telegram_id' => $user->id,
-                                ],
+                                ['telegram_id' => $user->id],
                                 [
                                     'username' => $user->username ?? null,
                                     'first_name' => $user->first_name ?? 'Пользователь',
@@ -199,7 +185,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Сброс старых BotSession для лобби
+                        | Сброс сессии
                         |--------------------------------------------------------------------------
                         */
 
@@ -227,24 +213,13 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Настройки и профиль игрока
-                        |--------------------------------------------------------------------------
-                        |
-                        | Обрабатываем до остальных обработчиков.
-                        | Это позволяет принять фото скина и не отправить
-                        | его в глобальный чат.
+                        | Настройки и профиль
                         |--------------------------------------------------------------------------
                         */
 
                         if ($settingsHandler->handle($message, $telegram)) {
                             continue;
                         }
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Защита от передачи ввода профиля в другие обработчики
-                        |--------------------------------------------------------------------------
-                        */
 
                         $profileGuardUser = $telegramId
                             ? TelegramUser::where(
@@ -268,7 +243,6 @@ class TelegramBot extends Command
 
                         if (str_starts_with($text, '/start lobby_')) {
                             $joinLobbyHandler->handleDeepLink($message, $telegram);
-
                             continue;
                         }
 
@@ -280,25 +254,18 @@ class TelegramBot extends Command
 
                         if (str_starts_with($text, '/start clan_')) {
                             $clanHandler->handleDeepLink($message, $telegram);
-
                             continue;
                         }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Модерация клана
+                        | Кланы
                         |--------------------------------------------------------------------------
                         */
 
                         if ($clanModerationService->handle($message, $telegram)) {
                             continue;
                         }
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Система кланов
-                        |--------------------------------------------------------------------------
-                        */
 
                         if ($clanHandler->handle($message, $telegram)) {
                             continue;
@@ -340,69 +307,51 @@ class TelegramBot extends Command
                                 }
                             }
 
-                            $telegram->sendMessage([
-                                'chat_id' => $message->chat->id,
-                                'text' => "🎮 Добро пожаловать в YkSUS!\n\nВыберите действие:",
-                                'reply_markup' => json_encode([
-                                    'keyboard' => [
-                                        [
-                                            ['text' => '➕ Создать лобби'],
-                                            ['text' => '🔍 Найти лобби'],
-                                        ],
-                                        [
-                                            ['text' => '🎮 Моё лобби'],
-                                        ],
-                                        [
-                                            ['text' => '⚙️ Настройки'],
-                                        ],
-                                    ],
-                                    'resize_keyboard' => true,
-                                ], JSON_UNESCAPED_UNICODE),
-                            ]);
+                            $this->sendMainMenu(
+                                $telegram,
+                                $chatId,
+                                "🎮 Добро пожаловать в YkSUS!\n\nВыберите действие:"
+                            );
 
                             continue;
                         }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Игровое меню
+                        | Главное / игровое меню
                         |--------------------------------------------------------------------------
                         */
 
                         if (
                             $text === '/game' ||
-                            $text === '🎮 Игровое меню'
+                            $text === '🎮 Игровое меню' ||
+                            $text === '⬅️ Главное меню'
                         ) {
-                            $telegram->sendMessage([
-                                'chat_id' => $message->chat->id,
-                                'text' => '🎮 Игровое меню',
-                                'reply_markup' => json_encode([
-                                    'keyboard' => [
-                                        [
-                                            ['text' => '➕ Создать лобби'],
-                                            ['text' => '🔍 Найти лобби'],
-                                        ],
-                                        [
-                                            ['text' => '🎮 Моё лобби'],
-                                        ],
-                                        [
-                                            ['text' => '⚙️ Настройки'],
-                                        ],
-                                    ],
-                                    'resize_keyboard' => true,
-                                ], JSON_UNESCAPED_UNICODE),
-                            ]);
+                            $this->sendMainMenu(
+                                $telegram,
+                                $chatId,
+                                '🎮 Игровое меню'
+                            );
 
                             continue;
                         }
 
                         /*
                         |--------------------------------------------------------------------------
-                        | СОЗДАНИЕ ЛОББИ
+                        | СОЗДАНИЕ ОБЫЧНОГО И ПРЕМЬЕРНОГО ЛОББИ
+                        |--------------------------------------------------------------------------
+                        |
+                        | Сначала обычный обработчик.
+                        | Если он не обработал премьерную кнопку, передаём
+                        | сообщение обработчику премьерных лобби.
                         |--------------------------------------------------------------------------
                         */
 
                         if ($createLobbyHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
+                        if ($premierLobbyHandler->handle($message, $telegram)) {
                             continue;
                         }
 
@@ -428,7 +377,7 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Админ
+                        | Администратор
                         |--------------------------------------------------------------------------
                         */
 
@@ -485,5 +434,35 @@ class TelegramBot extends Command
                 continue;
             }
         }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Главное меню
+    |--------------------------------------------------------------------------
+    */
+
+    private function sendMainMenu(Api $telegram, $chatId, string $title): void
+    {
+        $telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => $title,
+            'reply_markup' => json_encode([
+                'keyboard' => [
+                    [
+                        ['text' => '➕ Создать лобби'],
+                        ['text' => '🔍 Найти лобби'],
+                    ],
+                    [
+                        ['text' => '🎮 Моё лобби'],
+                        ['text' => '👤 Профиль'],
+                    ],
+                    [
+                        ['text' => '⚙️ Настройки'],
+                    ],
+                ],
+                'resize_keyboard' => true,
+            ], JSON_UNESCAPED_UNICODE),
+        ]);
     }
 }
