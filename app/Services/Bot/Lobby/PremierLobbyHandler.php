@@ -1,31 +1,23 @@
+
 <?php
 
 namespace App\Services\Bot\Lobby;
 
 use App\Models\BotSession;
-use App\Models\LobbyApplication;
 use App\Models\TelegramUser;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PremierLobbyHandler
 {
-    /**
-     * Handles the conversation for creating a scheduled premier lobby.
-     *
-     * Required DB tables:
-     * - premier_lobbies
-     * - lobby_applications
-     *
-     * This handler intentionally does not change the existing ordinary-lobby flow.
-     */
     public function handle($message, $telegram): bool
     {
         $text = trim((string) ($message->text ?? ''));
         $telegramId = $message->from->id ?? null;
         $chatId = $message->chat->id ?? $telegramId;
 
-        if (!$telegramId || !$text) {
+        if (!$telegramId || !$chatId || $text === '') {
             return false;
         }
 
@@ -34,6 +26,17 @@ class PremierLobbyHandler
         if (!$user) {
             return false;
         }
+
+        $session = BotSession::where(
+            'telegram_user_id',
+            $user->id
+        )->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Начало создания премьерного лобби
+        |--------------------------------------------------------------------------
+        */
 
         if ($text === '🎬 Создать премьерное лобби') {
             BotSession::updateOrCreate(
@@ -46,95 +49,208 @@ class PremierLobbyHandler
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' => "🎬 Создание премьерного лобби\n\nОтправьте название лобби.\n\nДля отмены нажмите «⬅️ Главное меню».",
+                'text' =>
+                    "🎬 Создание премьерного лобби\n\n" .
+                    "Отправьте название лобби.\n\n" .
+                    "Для отмены нажмите «⬅️ Главное меню».",
                 'reply_markup' => json_encode([
-                    'keyboard' => [[['text' => '⬅️ Главное меню']]],
+                    'keyboard' => [
+                        [['text' => '⬅️ Главное меню']],
+                    ],
                     'resize_keyboard' => true,
-                ]),
+                ], JSON_UNESCAPED_UNICODE),
             ]);
 
             return true;
         }
 
-        $session = BotSession::where('telegram_user_id', $user->id)->first();
+        /*
+        |--------------------------------------------------------------------------
+        | Обрабатываем только собственные шаги премьерного лобби
+        |--------------------------------------------------------------------------
+        */
 
         if (!$session || !str_starts_with((string) $session->step, 'premier_')) {
             return false;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Отмена
+        |--------------------------------------------------------------------------
+        */
+
         if ($text === '⬅️ Главное меню') {
             $session->delete();
-            return false;
+
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => "🎮 Главное меню\n\nВыберите действие:",
+                'reply_markup' => json_encode([
+                    'keyboard' => [
+                        [
+                            ['text' => '➕ Создать лобби'],
+                            ['text' => '🔍 Найти лобби'],
+                        ],
+                        [
+                            ['text' => '🎮 Моё лобби'],
+                            ['text' => '👤 Профиль'],
+                        ],
+                        [
+                            ['text' => '⚙️ Настройки'],
+                        ],
+                    ],
+                    'resize_keyboard' => true,
+                ], JSON_UNESCAPED_UNICODE),
+            ]);
+
+            return true;
         }
 
         $data = $this->decodeSessionData($session->data ?? null);
 
-        switch ($session->step) {
-            case 'premier_title':
-                if (mb_strlen($text) < 3 || mb_strlen($text) > 80) {
-                    $telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => 'Название должно содержать от 3 до 80 символов. Отправьте название ещё раз.',
-                    ]);
-                    return true;
-                }
+        /*
+        |--------------------------------------------------------------------------
+        | Название
+        |--------------------------------------------------------------------------
+        */
 
-                $data['title'] = $text;
-                $this->saveStep($session, 'premier_description', $data);
+        if ($session->step === 'premier_title') {
+            if (mb_strlen($text) < 3 || mb_strlen($text) > 80) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => '❌ Название должно содержать от 3 до 80 символов. Попробуйте ещё раз.',
+                ]);
+
+                return true;
+            }
+
+            $data['title'] = $text;
+
+            $this->saveStep(
+                $session,
+                'premier_description',
+                $data
+            );
+
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' =>
+                    "✅ Название сохранено: {$text}\n\n" .
+                    "📝 Теперь отправьте описание лобби.\n" .
+                    'Максимум 1000 символов. Можно отправить точку, если описание не нужно.',
+                'reply_markup' => json_encode([
+                    'keyboard' => [
+                        [['text' => '⬅️ Главное меню']],
+                    ],
+                    'resize_keyboard' => true,
+                ], JSON_UNESCAPED_UNICODE),
+            ]);
+
+            return true;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Описание
+        |--------------------------------------------------------------------------
+        */
+
+        if ($session->step === 'premier_description') {
+            if (mb_strlen($text) > 1000) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => '❌ Описание не должно превышать 1000 символов. Сократите его и отправьте снова.',
+                ]);
+
+                return true;
+            }
+
+            $data['description'] = $text === '.' ? '' : $text;
+
+            $this->saveStep(
+                $session,
+                'premier_datetime',
+                $data
+            );
+
+            $telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' =>
+                    "🗓 Укажите дату и время начала в формате:\n" .
+                    "ДД.ММ.ГГГГ ЧЧ:ММ\n\n" .
+                    "Например: 25.10.2026 19:30\n\n" .
+                    'Используется часовой пояс приложения Laravel.',
+                'reply_markup' => json_encode([
+                    'keyboard' => [
+                        [['text' => '⬅️ Главное меню']],
+                    ],
+                    'resize_keyboard' => true,
+                ], JSON_UNESCAPED_UNICODE),
+            ]);
+
+            return true;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Дата и время, затем создание записи
+        |--------------------------------------------------------------------------
+        */
+
+        if ($session->step === 'premier_datetime') {
+            try {
+                $startsAt = Carbon::createFromFormat(
+                    '!d.m.Y H:i',
+                    $text
+                );
+
+                if (
+                    !$startsAt ||
+                    $startsAt->format('d.m.Y H:i') !== $text
+                ) {
+                    throw new \InvalidArgumentException(
+                        'Invalid date format'
+                    );
+                }
+            } catch (\Throwable $e) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' =>
+                        "❌ Неверная дата или время.\n\n" .
+                        "Используйте формат ДД.ММ.ГГГГ ЧЧ:ММ.\n" .
+                        'Например: 25.10.2026 19:30',
+                ]);
+
+                return true;
+            }
+
+            if ($startsAt->lessThanOrEqualTo(now()->addMinutes(5))) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => '⏱ Начало должно быть минимум через 5 минут. Укажите другую дату и время.',
+                ]);
+
+                return true;
+            }
+
+            if (empty($data['title'])) {
+                $session->delete();
 
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
-                    'text' => 'Теперь отправьте описание лобби (до 1000 символов).',
+                    'text' => '❌ Не найдено название лобби. Начните создание заново командой «➕ Создать лобби».',
                 ]);
+
                 return true;
+            }
 
-            case 'premier_description':
-                if (mb_strlen($text) > 1000) {
-                    $telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => 'Описание не должно превышать 1000 символов. Сократите его и отправьте снова.',
-                    ]);
-                    return true;
-                }
-
-                $data['description'] = $text;
-                $this->saveStep($session, 'premier_datetime', $data);
-
-                $telegram->sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => "Укажите дату и время начала в формате:\nДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 25.10.2026 19:30\n\nИспользуется часовой пояс приложения Laravel.",
-                ]);
-                return true;
-
-            case 'premier_datetime':
-                try {
-                    $startsAt = Carbon::createFromFormat('d.m.Y H:i', $text);
-                    if (!$startsAt || $startsAt->format('d.m.Y H:i') !== $text) {
-                        throw new \InvalidArgumentException();
-                    }
-                } catch (\Throwable $e) {
-                    $telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => "Неверный формат даты или времени.\nПример: 25.10.2026 19:30",
-                    ]);
-                    return true;
-                }
-
-                if ($startsAt->lessThanOrEqualTo(now()->addMinutes(5))) {
-                    $telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => 'Начало должно быть минимум через 5 минут. Укажите другую дату и время.',
-                    ]);
-                    return true;
-                }
-
-                $data['starts_at'] = $startsAt->toDateTimeString();
-
+            try {
                 $premierLobbyId = DB::table('premier_lobbies')->insertGetId([
                     'creator_id' => $user->id,
                     'title' => $data['title'],
                     'description' => $data['description'] ?? '',
-                    'starts_at' => $data['starts_at'],
+                    'starts_at' => $startsAt->toDateTimeString(),
                     'status' => 'published',
                     'max_players' => 12,
                     'created_at' => now(),
@@ -145,23 +261,57 @@ class PremierLobbyHandler
 
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
-                    'text' => "✅ Премьерное лобби опубликовано!\n\n"
-                        . "🆔 ID: #{$premierLobbyId}\n"
-                        . "🎬 Название: {$data['title']}\n"
-                        . "📝 Описание: " . ($data['description'] ?: 'Не указано') . "\n"
-                        . "🗓 Начало: " . $startsAt->format('d.m.Y H:i') . "\n\n"
-                        . "Следующий шаг — подключить публикацию анонса в поиск лобби и обработку заявок.",
+                    'text' =>
+                        "✅ Премьерное лобби опубликовано!\n\n" .
+                        "🆔 ID: #{$premierLobbyId}\n" .
+                        "🎬 Название: {$data['title']}\n" .
+                        "📝 Описание: " .
+                        (($data['description'] ?? '') !== ''
+                            ? $data['description']
+                            : 'Не указано') .
+                        "\n🗓 Начало: " .
+                        $startsAt->format('d.m.Y H:i') .
+                        "\n\nПока запись создана в базе данных. " .
+                        'Публикацию в общем поиске и приём заявок нужно подключить отдельно.',
+                    'reply_markup' => json_encode([
+                        'keyboard' => [
+                            [['text' => '➕ Создать лобби']],
+                            [['text' => '🔍 Найти лобби']],
+                            [['text' => '⬅️ Главное меню']],
+                        ],
+                        'resize_keyboard' => true,
+                    ], JSON_UNESCAPED_UNICODE),
                 ]);
+
                 return true;
+            } catch (\Throwable $e) {
+                Log::error('Premier lobby creation failed', [
+                    'user_id' => $user->id,
+                    'message' => $e->getMessage(),
+                ]);
+
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => '❌ Не удалось сохранить премьерное лобби. Проверьте таблицу premier_lobbies и журнал Laravel.',
+                ]);
+
+                return true;
+            }
         }
 
         return false;
     }
 
-    private function saveStep(BotSession $session, string $step, array $data): void
-    {
+    private function saveStep(
+        BotSession $session,
+        string $step,
+        array $data
+    ): void {
         $session->step = $step;
-        $session->data = json_encode($data, JSON_UNESCAPED_UNICODE);
+        $session->data = json_encode(
+            $data,
+            JSON_UNESCAPED_UNICODE
+        );
         $session->save();
     }
 
@@ -172,6 +322,7 @@ class PremierLobbyHandler
         }
 
         $data = json_decode($json, true);
+
         return is_array($data) ? $data : [];
     }
 }
