@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Telegram;
@@ -8,7 +9,6 @@ use danog\MadelineProto\SimpleEventHandler;
 use danog\MadelineProto\EventHandler\Attributes\Handler;
 use danog\MadelineProto\EventHandler\Message;
 use danog\MadelineProto\EventHandler\SimpleFilter\Incoming;
-use danog\MadelineProto\EventHandler\SimpleFilter\FromAdmin;
 use danog\MadelineProto\EventHandler\SimpleFilter\IsReply;
 
 final class MuteEventHandler extends SimpleEventHandler
@@ -23,43 +23,96 @@ final class MuteEventHandler extends SimpleEventHandler
     }
 
     /**
-     * Команды администраторов, отправленные ответом
-     * на сообщение нашего аккаунта.
+     * Обрабатывает команды администратора,
+     * отправленные ответом на сообщение нашего аккаунта.
      */
     #[Handler]
     public function handleMuteCommand(
-        Incoming&Message&FromAdmin&IsReply $message
+        Incoming&Message&IsReply $message
     ): void {
         if ((int) $message->chatId !== self::CHAT_ID) {
             return;
         }
 
+        $text = mb_strtolower(trim($message->message));
+
+        $isMute = preg_match(
+            '/^мут\s+(\d+)\s+(минут(?:у|ы)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
+            $text,
+            $matches
+        );
+
+        $isUnmute = preg_match(
+            '/^снять\s+мут[!.]?$/u',
+            $text
+        );
+
+        if (!$isMute && !$isUnmute) {
+            return;
+        }
+
+        // Команда должна быть ответом на сообщение нашего аккаунта.
         $reply = $message->getReply(Message::class);
 
         if (!$reply || (int) $reply->senderId !== $this->ownId()) {
             return;
         }
 
-        $text = mb_strtolower(trim($message->message));
+        // Проверяем права отправителя команды.
+        try {
+            $member = $this->getInfo($message->senderId);
+            $senderId = (int) $message->senderId;
+
+            $chat = $this->getInfo(self::CHAT_ID);
+            $isAdmin = false;
+
+            // Проверяем статус через информацию о чате.
+            $participants =
+                $chat['participants']['participants']
+                ?? $chat['ChatParticipants']['participants']
+                ?? [];
+
+            foreach ($participants as $participant) {
+                if (
+                    (int) ($participant['user_id'] ?? 0) === $senderId
+                    && in_array(
+                        $participant['_'] ?? '',
+                        [
+                            'chatParticipantAdmin',
+                            'chatParticipantCreator',
+                        ],
+                        true
+                    )
+                ) {
+                    $isAdmin = true;
+                    break;
+                }
+            }
+
+            // В некоторых типах чатов данные участников
+            // не возвращаются в getInfo(). В этом случае
+            // не разрешаем команду без подтверждения прав.
+            if (!$isAdmin) {
+                $message->reply(
+                    'Не удалось подтвердить права администратора.'
+                );
+                return;
+            }
+        } catch (\Throwable $e) {
+            $message->reply(
+                'Не удалось проверить права администратора.'
+            );
+            return;
+        }
 
         // Снять мут.
-        if (preg_match('/^снять\s+мут[!.]?$/u', $text)) {
+        if ($isUnmute) {
             TelegramUserMute::query()
                 ->where('chat_id', self::CHAT_ID)
                 ->where('user_id', $this->ownId())
                 ->delete();
 
             $message->reply('Мут снят.');
-
-            return;
-        }
-
-        // Примеры: мут 2 часа, мут 30 минут, мут 1 день.
-        if (!preg_match(
-            '/^мут\s+(\d+)\s+(минут(?:у|ы)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
-            $text,
-            $matches
-        )) {
             return;
         }
 
@@ -68,9 +121,8 @@ final class MuteEventHandler extends SimpleEventHandler
 
         if ($amount < 1 || $amount > 30) {
             $message->reply(
-                'Укажи срок от 1 до 30 единиц: например, мут 2 часа.'
+                'Укажи срок от 1 до 30 единиц. Например: мут 2 часа.'
             );
-
             return;
         }
 
@@ -99,7 +151,8 @@ final class MuteEventHandler extends SimpleEventHandler
     }
 
     /**
-     * Удаление собственных сообщений во время активного мута.
+     * Удаляет исходящие сообщения нашего аккаунта,
+     * пока действует мут.
      */
     #[Handler]
     public function deleteMutedMessages(Message $message): void
@@ -112,21 +165,23 @@ final class MuteEventHandler extends SimpleEventHandler
             return;
         }
 
-        $mute = TelegramUserMute::query()
+        $muted = TelegramUserMute::query()
             ->where('chat_id', self::CHAT_ID)
             ->where('user_id', $this->ownId())
             ->where('muted_until', '>', now())
-            ->first();
+            ->exists();
 
-        if (!$mute) {
+        if (!$muted) {
             return;
         }
 
-        // Не удаляем команду администратора или чужие сообщения:
-        // сюда попадают только исходящие сообщения аккаунта.
-        $this->channels->deleteMessages(
-            channel: self::CHAT_ID,
-            id: [$message->id],
-        );
+        try {
+            $this->channels->deleteMessages(
+                channel: self::CHAT_ID,
+                id: [$message->id],
+            );
+        } catch (\Throwable $e) {
+            $this->logger('Не удалось удалить сообщение во время мута: ' . $e->getMessage());
+        }
     }
 }
