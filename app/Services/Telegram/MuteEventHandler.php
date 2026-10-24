@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Telegram;
+namespace App\Services\Telegram;
 
 use App\Models\TelegramUserMute;
 use Carbon\Carbon;
