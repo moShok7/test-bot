@@ -2,8 +2,9 @@
 
 namespace App\Console\Commands;
 
-use App\Telegram\MuteEventHandler;
-use danog\MadelineProto\SimpleEventHandler;
+use App\Services\Telegram\MuteEventHandler;
+use danog\MadelineProto\Settings;
+use danog\MadelineProto\Settings\AppInfo;
 use Illuminate\Console\Command;
 
 class TelegramMuteListener extends Command
@@ -14,17 +15,17 @@ class TelegramMuteListener extends Command
 
     public function handle(): int
     {
-        $settings = (new \danog\MadelineProto\Settings())
-            ->setAppInfo(
-                (new \danog\MadelineProto\Settings\AppInfo())
-                    ->setApiId((int) config('services.telegram.api_id'))
-                    ->setApiHash(config('services.telegram.api_hash'))
-            );
+        $settings = new Settings();
+
+        $settings->setAppInfo(
+            (new AppInfo())
+                ->setApiId((int) config('services.telegram.api_id'))
+                ->setApiHash(config('services.telegram.api_hash'))
+        );
 
         $this->info('Запускаю слушатель Telegram-мута...');
 
-        SimpleEventHandler::startAndLoop(
-            MuteEventHandler::class,
+        MuteEventHandler::startAndLoop(
             storage_path('telegram/user.session'),
             $settings
         );
