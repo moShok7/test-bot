@@ -25,13 +25,20 @@ final class MuteEventHandler extends SimpleEventHandler
     }
 
     /**
-     * Обработка команд администраторов,
-     * ответивших на сообщение владельца аккаунта.
+     * Команды администратора в ответ на сообщение владельца аккаунта.
      */
     #[Handler]
     public function handleMuteCommand(
         Incoming&Message&FromAdmin&IsReply $message
     ): void {
+        $text = mb_strtolower(trim($message->message));
+
+        $this->logger(
+            'MUTE COMMAND DEBUG: chat=' . $message->chatId
+            . ', sender=' . $message->senderId
+            . ', text=' . $text
+        );
+
         if ((int) $message->chatId !== self::CHAT_ID) {
             return;
         }
@@ -39,28 +46,29 @@ final class MuteEventHandler extends SimpleEventHandler
         $reply = $message->getReply(Message::class);
 
         if (!$reply || (int) $reply->senderId !== $this->ownId()) {
+            $this->logger('MUTE COMMAND DEBUG: ответ не на сообщение владельца');
             return;
         }
 
-        $text = mb_strtolower(trim($message->message));
-
-        // Снять мут.
-        if (preg_match('/^снять\s+мут[!.]?$/u', $text)) {
+        // Снять мут: "снять мут" или "размутить".
+        if (preg_match('/^(?:снять\s+мут|размутить)[!.]?$/u', $text)) {
             TelegramUserMute::query()
                 ->where('chat_id', self::CHAT_ID)
                 ->where('user_id', $this->ownId())
                 ->delete();
 
-            $message->reply('Мут снят. Владелец снова может писать.');
+            $this->logger('MUTE COMMAND DEBUG: мут снят');
+            $message->reply('🔊 Мут снят. Теперь можно писать.');
             return;
         }
 
-        // Примеры: мут 30 минут, мут 2 часа, мут 1 день.
+        // Поддерживаем: мут 30 минут, мут 2 часа, мут 1 день.
         if (!preg_match(
-            '/^мут\s+(\d+)\s+(минут(?:у|ы|а)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
+            '/^мут\s+(\d+)\s+(минут(?:у|ы|а|ой)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
             $text,
             $matches
         )) {
+            $this->logger('MUTE COMMAND DEBUG: неизвестная команда');
             return;
         }
 
@@ -68,9 +76,7 @@ final class MuteEventHandler extends SimpleEventHandler
         $unit = $matches[2];
 
         if ($amount < 1 || $amount > 30) {
-            $message->reply(
-                'Укажи срок от 1 до 30 единиц. Например: мут 2 часа.'
-            );
+            $message->reply('Укажи срок от 1 до 30. Например: мут 2 часа.');
             return;
         }
 
@@ -82,36 +88,38 @@ final class MuteEventHandler extends SimpleEventHandler
             $until = Carbon::now()->addDays($amount);
         }
 
-        TelegramUserMute::query()->updateOrCreate(
-            [
-                'chat_id' => self::CHAT_ID,
-                'user_id' => $this->ownId(),
-            ],
-            [
-                'muted_by' => (int) $message->senderId,
-                'muted_until' => $until,
-            ]
-        );
+        try {
+            TelegramUserMute::query()->updateOrCreate(
+                [
+                    'chat_id' => self::CHAT_ID,
+                    'user_id' => $this->ownId(),
+                ],
+                [
+                    'muted_by' => (int) $message->senderId,
+                    'muted_until' => $until,
+                ]
+            );
 
-        $message->reply(
-            "🔇 Владелец замучен!\n"
-            . "Его сообщения будут автоматически удаляться до "
-            . $until->format('d.m.Y H:i')
-            . '.'
-        );
+            $this->logger('MUTE COMMAND DEBUG: мут сохранён до ' . $until);
+
+            $message->reply(
+                "🔇 Мут активирован!\n"
+                . "Сообщения владельца будут удаляться до "
+                . $until->format('d.m.Y H:i') . '.'
+            );
+        } catch (\Throwable $e) {
+            $this->logger('MUTE COMMAND ERROR: ' . $e->getMessage());
+            $message->reply('Ошибка при сохранении мута. Проверь логи сервера.');
+        }
     }
 
     /**
-     * Удалять исходящие сообщения владельца во время активного мута.
+     * Удаление исходящих сообщений владельца во время активного мута.
      */
     #[Handler]
     public function deleteMutedMessages(Message $message): void
     {
-        if (!$message->out) {
-            return;
-        }
-
-        if ((int) $message->chatId !== self::CHAT_ID) {
+        if (!$message->out || (int) $message->chatId !== self::CHAT_ID) {
             return;
         }
 
@@ -132,14 +140,10 @@ final class MuteEventHandler extends SimpleEventHandler
             );
 
             $this->logger(
-                'MuteEventHandler: удалено сообщение '
-                . $message->id
-                . ' во время мута.'
+                'MUTE DEBUG: запрос удаления сообщения ' . $message->id
             );
         } catch (\Throwable $e) {
-            $this->logger(
-                'MuteEventHandler delete error: ' . $e->getMessage()
-            );
+            $this->logger('MUTE DELETE ERROR: ' . $e->getMessage());
         }
     }
 }
