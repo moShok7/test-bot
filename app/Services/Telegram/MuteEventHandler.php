@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Telegram;
 
 use App\Models\TelegramUserMute;
@@ -23,34 +25,8 @@ final class MuteEventHandler extends SimpleEventHandler
     }
 
     /**
-     * TEMPORARY DIAGNOSTICS.
-     * Checks whether the handler receives the command at all.
-     * Remove this method after testing.
-     */
-    #[Handler]
-    public function debugIncomingCommand(Incoming&Message $message): void
-    {
-        if ((int) $message->chatId !== self::CHAT_ID) {
-            return;
-        }
-
-        $text = mb_strtolower(trim($message->message));
-
-        if (
-            preg_match('/^мут\b/u', $text)
-            || preg_match('/^снять\s+мут\b/u', $text)
-        ) {
-            $message->reply(
-                'DEBUG: сообщение получено. Sender ID: '
-                . (int) $message->senderId
-                . '. Reply ID: '
-                . (int) ($message->replyToMsgId ?? 0)
-            );
-        }
-    }
-
-    /**
-     * Admin commands targeting only this logged-in account.
+     * Обработка команд администраторов,
+     * ответивших на сообщение владельца аккаунта.
      */
     #[Handler]
     public function handleMuteCommand(
@@ -68,20 +44,20 @@ final class MuteEventHandler extends SimpleEventHandler
 
         $text = mb_strtolower(trim($message->message));
 
-        // Remove mute.
+        // Снять мут.
         if (preg_match('/^снять\s+мут[!.]?$/u', $text)) {
             TelegramUserMute::query()
                 ->where('chat_id', self::CHAT_ID)
                 ->where('user_id', $this->ownId())
                 ->delete();
 
-            $message->reply('Мут снят.');
+            $message->reply('Мут снят. Владелец снова может писать.');
             return;
         }
 
-        // Examples: мут 30 минут, мут 2 часа, мут 1 день.
+        // Примеры: мут 30 минут, мут 2 часа, мут 1 день.
         if (!preg_match(
-            '/^мут\s+(\d+)\s+(минут(?:у|ы)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
+            '/^мут\s+(\d+)\s+(минут(?:у|ы|а)?|час(?:а|ов)?|д(?:ень|ня|ней))[!.]?$/u',
             $text,
             $matches
         )) {
@@ -118,12 +94,15 @@ final class MuteEventHandler extends SimpleEventHandler
         );
 
         $message->reply(
-            'Мут включён до ' . $until->format('d.m.Y H:i') . '.'
+            "🔇 Владелец замучен!\n"
+            . "Его сообщения будут автоматически удаляться до "
+            . $until->format('d.m.Y H:i')
+            . '.'
         );
     }
 
     /**
-     * Deletes outgoing messages from this account while muted.
+     * Удалять исходящие сообщения владельца во время активного мута.
      */
     #[Handler]
     public function deleteMutedMessages(Message $message): void
@@ -136,20 +115,26 @@ final class MuteEventHandler extends SimpleEventHandler
             return;
         }
 
-        $mute = TelegramUserMute::query()
-            ->where('chat_id', self::CHAT_ID)
-            ->where('user_id', $this->ownId())
-            ->where('muted_until', '>', now())
-            ->first();
-
-        if (!$mute) {
-            return;
-        }
-
         try {
+            $mute = TelegramUserMute::query()
+                ->where('chat_id', self::CHAT_ID)
+                ->where('user_id', $this->ownId())
+                ->where('muted_until', '>', now())
+                ->first();
+
+            if (!$mute) {
+                return;
+            }
+
             $this->channels->deleteMessages(
                 channel: self::CHAT_ID,
                 id: [$message->id],
+            );
+
+            $this->logger(
+                'MuteEventHandler: удалено сообщение '
+                . $message->id
+                . ' во время мута.'
             );
         } catch (\Throwable $e) {
             $this->logger(
