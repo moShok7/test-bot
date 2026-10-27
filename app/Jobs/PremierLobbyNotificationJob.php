@@ -1,14 +1,17 @@
+
 <?php
 
 namespace App\Jobs;
 
 use App\Models\LobbyApplication;
-use App\Models\TelegramUser;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Laravel\Facades\Telegram;
 
 class PremierLobbyNotificationJob implements ShouldQueue
@@ -23,16 +26,16 @@ class PremierLobbyNotificationJob implements ShouldQueue
     public int $timeout = 120;
 
     /**
-     * $type:
-     * - application_received: notify the lobby creator about a new application
-     * - application_approved: notify the applicant that they were accepted
-     * - application_rejected: notify the applicant that they were rejected
-     * - published: announce a newly published premier lobby to supplied chat IDs
+     * Типы уведомлений:
+     * - application_received
+     * - application_approved
+     * - application_rejected
+     * - published
      *
-     * $payload can contain:
+     * Payload:
      * - application_id
      * - premier_lobby_id
-     * - chat_ids (for published announcements)
+     * - chat_ids
      */
     public function __construct(
         public string $type,
@@ -45,6 +48,19 @@ class PremierLobbyNotificationJob implements ShouldQueue
     {
         if ($this->type === 'published') {
             $this->sendPublishedAnnouncement();
+
+            return;
+        }
+
+        if (!in_array($this->type, [
+            'application_received',
+            'application_approved',
+            'application_rejected',
+        ], true)) {
+            Log::warning('Unknown premier lobby notification type', [
+                'type' => $this->type,
+            ]);
+
             return;
         }
 
@@ -55,6 +71,10 @@ class PremierLobbyNotificationJob implements ShouldQueue
         ])->find($this->payload['application_id'] ?? null);
 
         if (!$application || !$application->premierLobby) {
+            Log::warning('Premier lobby application not found', [
+                'application_id' => $this->payload['application_id'] ?? null,
+            ]);
+
             return;
         }
 
@@ -72,62 +92,135 @@ class PremierLobbyNotificationJob implements ShouldQueue
                 : ($applicant->first_name ?: 'Игрок');
 
             $answers = $application->answers ?? [];
+
+            if (is_string($answers)) {
+                $decoded = json_decode($answers, true);
+                $answers = is_array($decoded) ? $decoded : [];
+            }
+
             $answersText = '';
+
             foreach ($answers as $question => $answer) {
-                $answersText .= "\n• " . $question . ': ' . $answer;
+                if (is_array($answer) || is_object($answer)) {
+                    $answer = json_encode(
+                        $answer,
+                        JSON_UNESCAPED_UNICODE
+                    );
+                }
+
+                $answersText .= "\n• "
+                    . $question
+                    . ': '
+                    . (string) $answer;
             }
 
             Telegram::bot()->sendMessage([
                 'chat_id' => $creator->telegram_id,
-                'text' => "📝 Новая заявка на премьерное лобби\n\n"
+                'text' =>
+                    "📝 Новая заявка на премьерное лобби\n\n"
                     . "🎬 {$lobby->title}\n"
                     . "👤 Игрок: {$applicantName}\n"
-                    . "🗓 Начало: " . $lobby->starts_at->format('d.m.Y H:i')
-                    . ($answersText ? "\n\nАнкета:" . $answersText : ''),
+                    . "🗓 Начало: "
+                    . Carbon::parse($lobby->starts_at)->format('d.m.Y H:i')
+                    . ($answersText
+                        ? "\n\nАнкета:" . $answersText
+                        : ''),
                 'reply_markup' => json_encode([
                     'inline_keyboard' => [[
-                        ['text' => '✅ Принять', 'callback_data' => 'premier_app_approve_' . $application->id],
-                        ['text' => '❌ Отклонить', 'callback_data' => 'premier_app_reject_' . $application->id],
+                        [
+                            'text' => '✅ Принять',
+                            'callback_data' =>
+                                'premier_app_approve_' . $application->id,
+                        ],
+                        [
+                            'text' => '❌ Отклонить',
+                            'callback_data' =>
+                                'premier_app_reject_' . $application->id,
+                        ],
                     ]],
-                ]),
+                ], JSON_UNESCAPED_UNICODE),
             ]);
+
             return;
         }
 
-        if (in_array($this->type, ['application_approved', 'application_rejected'], true)) {
+        if (in_array($this->type, [
+            'application_approved',
+            'application_rejected',
+        ], true)) {
             if (!$applicant) {
                 return;
             }
 
             $approved = $this->type === 'application_approved';
+
             Telegram::bot()->sendMessage([
                 'chat_id' => $applicant->telegram_id,
-                'text' => ($approved ? '✅ Ваша заявка одобрена.' : '❌ Ваша заявка отклонена.')
+                'text' =>
+                    ($approved
+                        ? '✅ Ваша заявка одобрена.'
+                        : '❌ Ваша заявка отклонена.')
                     . "\n\n🎬 Премьерное лобби: {$lobby->title}"
-                    . "\n🗓 Начало: " . $lobby->starts_at->format('d.m.Y H:i'),
+                    . "\n🗓 Начало: "
+                    . Carbon::parse($lobby->starts_at)->format('d.m.Y H:i'),
             ]);
         }
     }
 
+    /**
+     * Рассылка анонса опубликованного премьерного лобби.
+     *
+     * Ожидает premier_lobby_id и массив chat_ids в payload.
+     */
     private function sendPublishedAnnouncement(): void
     {
-        $lobby = \Illuminate\Support\Facades\DB::table('premier_lobbies')
+        $lobby = DB::table('premier_lobbies')
             ->where('id', $this->payload['premier_lobby_id'] ?? 0)
+            ->where('status', 'published')
             ->first();
 
         if (!$lobby) {
+            Log::warning('Published premier lobby not found', [
+                'premier_lobby_id' =>
+                    $this->payload['premier_lobby_id'] ?? null,
+            ]);
+
             return;
         }
 
-        foreach (($this->payload['chat_ids'] ?? []) as $chatId) {
-            Telegram::bot()->sendMessage([
-                'chat_id' => $chatId,
-                'text' => "🎬 Премьерное лобби\n\n"
-                    . "{$lobby->title}\n\n"
-                    . ($lobby->description ?: 'Описание не указано')
-                    . "\n\n🗓 Начало: " . \Illuminate\Support\Carbon::parse($lobby->starts_at)->format('d.m.Y H:i')
-                    . "\n\nЧтобы подать заявку, откройте бота и выберите премьерное лобби.",
-            ]);
+        $chatIds = $this->payload['chat_ids'] ?? [];
+
+        if (!is_array($chatIds) || empty($chatIds)) {
+            return;
+        }
+
+        $startTime = Carbon::parse($lobby->starts_at)
+            ->format('d.m.Y H:i');
+
+        $message =
+            "🎬 Премьерное лобби\n\n"
+            . "{$lobby->title}\n\n"
+            . ($lobby->description ?: 'Описание не указано')
+            . "\n\n🗓 Начало: {$startTime}"
+            . "\n\nЧтобы подать заявку, откройте бота "
+            . 'и выберите премьерное лобби.';
+
+        foreach (array_unique($chatIds) as $chatId) {
+            try {
+                Telegram::bot()->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => $message,
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning(
+                    'Premier lobby announcement failed',
+                    [
+                        'premier_lobby_id' => $lobby->id,
+                        'chat_id' => $chatId,
+                        'message' => $e->getMessage(),
+                    ]
+                );
+            }
         }
     }
 }

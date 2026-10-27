@@ -2,6 +2,7 @@
 
 namespace App\Services\Bot\Lobby;
 
+use App\Jobs\SendLobbyNotificationsJob;
 use App\Models\TelegramUser;
 use App\Models\BotSession;
 use App\Models\Lobby;
@@ -55,8 +56,6 @@ class CreateLobbyHandler
         */
 
         if ($text === '➕ Создать лобби') {
-            // Не разрешаем создавать второе активное лобби,
-            // если пользователь уже является создателем ожидающего лобби.
             $already = Lobby::where('creator_id', $user->id)
                 ->where('status', 'waiting')
                 ->exists();
@@ -64,8 +63,8 @@ class CreateLobbyHandler
             if ($already) {
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
-                    'text' => "⚠️ У вас уже есть ожидающее лобби.\n\n" .
-                        'Сначала завершите или удалите его.',
+                    'text' => "⚠️ У вас уже есть ожидающее лобби.\n\n"
+                        . 'Сначала завершите или удалите его.',
                     'reply_markup' => json_encode([
                         'keyboard' => [
                             [['text' => '🎮 Моё лобби']],
@@ -117,12 +116,12 @@ class CreateLobbyHandler
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
                     'text' =>
-                        "🎮 Создайте комнату в игре.\n\n" .
-                        "После этого отправьте код комнаты.\n\n" .
-                        "🔑 Код должен содержать ровно 6 символов.\n" .
-                        "Разрешены только английские буквы и цифры.\n" .
-                        "⏱ У вас есть 5 минут.\n\n" .
-                        'Или нажмите «⬅️ Главное меню».',
+                        "🎮 Создайте комнату в игре.\n\n"
+                        . "После этого отправьте код комнаты.\n\n"
+                        . "🔑 Код должен содержать ровно 6 символов.\n"
+                        . "Разрешены только английские буквы и цифры.\n"
+                        . "⏱ У вас есть 5 минут.\n\n"
+                        . 'Или нажмите «⬅️ Главное меню».',
                     'reply_markup' => json_encode([
                         'keyboard' => [
                             [['text' => '⬅️ Главное меню']],
@@ -135,7 +134,6 @@ class CreateLobbyHandler
             }
 
             if ($text === '🎬 Создать премьерное лобби') {
-                // PremierLobbyHandler обработает этот выбор.
                 return false;
             }
 
@@ -177,14 +175,13 @@ class CreateLobbyHandler
             return false;
         }
 
-        // Код должен состоять ровно из 6 английских букв или цифр.
         if (!preg_match('/^[A-Za-z0-9]{6}$/', $text)) {
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
-                    "❌ Неверный формат кода.\n\n" .
-                    "Код должен содержать ровно 6 символов: " .
-                    'только английские буквы и цифры.',
+                    "❌ Неверный формат кода.\n\n"
+                    . "Код должен содержать ровно 6 символов: "
+                    . 'только английские буквы и цифры.',
             ]);
 
             return true;
@@ -220,7 +217,7 @@ class CreateLobbyHandler
 
         /*
         |--------------------------------------------------------------------------
-        | Создаём обычное лобби
+        | Создаём обычное лобби и запускаем рассылку
         |--------------------------------------------------------------------------
         */
 
@@ -231,25 +228,34 @@ class CreateLobbyHandler
                 'status' => 'waiting',
             ]);
 
-            // Добавляем создателя в участники, если его ещё нет.
             LobbyPlayer::firstOrCreate([
                 'lobby_id' => $lobby->id,
                 'telegram_user_id' => $user->id,
             ]);
+
+            $creatorName = $user->username
+                ? '@' . $user->username
+                : ($user->first_name ?: 'Игрок');
+
+            SendLobbyNotificationsJob::dispatch(
+                lobbyId: (int) $lobby->id,
+                creatorTelegramId: (int) $user->telegram_id,
+                creatorName: (string) $creatorName,
+                count: 100,
+            )->onQueue('telegram');
 
             $session->delete();
 
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
-                    "✅ Обычное лобби создано!\n\n" .
-                    "🔑 Код комнаты: {$lobby->game_room_code}\n" .
-                    "🆔 Лобби: #{$lobby->id}\n\n" .
-                    'Другие игроки могут найти ваше лобби через поиск.',
+                    "✅ Обычное лобби создано!\n\n"
+                    . "🔑 Код комнаты: {$lobby->game_room_code}\n"
+                    . "🆔 Лобби: #{$lobby->id}\n\n"
+                    . '📢 Запущена рассылка игрокам.',
                 'reply_markup' => json_encode([
                     'keyboard' => [
-                        [['text' => '🎮 Моё лобби']],
-                        [['text' => '🔍 Найти лобби']],
+                        [['text' => '❌ Удалить лобби']],
                         [['text' => '⬅️ Главное меню']],
                     ],
                     'resize_keyboard' => true,
@@ -266,8 +272,8 @@ class CreateLobbyHandler
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
-                    '❌ Не удалось создать лобби. ' .
-                    'Проверьте настройки базы данных и попробуйте снова.',
+                    '❌ Не удалось создать лобби. '
+                    . 'Проверьте настройки базы данных и попробуйте снова.',
             ]);
 
             return true;

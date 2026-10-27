@@ -47,8 +47,9 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
 
         Log::info('GlobalChatDeliveryBatchJob START', [
             'chatMessageId' => $this->chatMessageId,
-            'users' => count($this->telegramUserIds),
+            'usersInBatch' => count($this->telegramUserIds),
             'messageType' => $this->messageType,
+            'attempt' => $this->attempts(),
         ]);
 
         if (empty($this->telegramUserIds)) {
@@ -62,17 +63,42 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         $recipients = TelegramUser::query()
             ->whereIn('telegram_id', $this->telegramUserIds)
             ->where('chat_notifications', true)
+            ->where('telegram_id', '!=', $this->authorTelegramId)
             ->get();
 
         $success = 0;
         $failed = 0;
+        $skipped = 0;
 
         foreach ($recipients as $recipient) {
+            $recipientStartedAt = microtime(true);
+
             try {
+                // Не отправляем сообщение повторно, если доставка
+                // уже зарегистрирована в базе.
+                $alreadyDelivered = ChatMessageDelivery::query()
+                    ->where('chat_message_id', $this->chatMessageId)
+                    ->where('telegram_user_id', $recipient->id)
+                    ->exists();
+
+                if ($alreadyDelivered) {
+                    $skipped++;
+
+                    Log::info('GLOBAL CHAT SKIP ALREADY DELIVERED', [
+                        'chatMessageId' => $this->chatMessageId,
+                        'telegramUserId' => $recipient->id,
+                        'telegramId' => $recipient->telegram_id,
+                    ]);
+
+                    continue;
+                }
+
                 $sentMessages = $this->sendToRecipient(
                     telegram: $telegram,
                     recipient: $recipient,
                 );
+
+                $savedDelivery = false;
 
                 foreach ($sentMessages as $sentMessage) {
                     if (!$sentMessage) {
@@ -96,6 +122,8 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                         ]
                     );
 
+                    $savedDelivery = true;
+
                     Log::info('GLOBAL CHAT SEND SUCCESS', [
                         'chatMessageId' => $this->chatMessageId,
                         'telegramUserId' => $recipient->id,
@@ -105,7 +133,17 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                     ]);
                 }
 
-                $success++;
+                if ($savedDelivery) {
+                    $success++;
+                } else {
+                    $failed++;
+
+                    Log::warning('GLOBAL CHAT DELIVERY NOT RECORDED', [
+                        'chatMessageId' => $this->chatMessageId,
+                        'telegramUserId' => $recipient->id,
+                        'telegramId' => $recipient->telegram_id,
+                    ]);
+                }
             } catch (Throwable $e) {
                 $failed++;
 
@@ -113,6 +151,16 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                     recipient: $recipient,
                     exception: $e,
                 );
+            } finally {
+                Log::info('GLOBAL CHAT SEND TIMING', [
+                    'chatMessageId' => $this->chatMessageId,
+                    'telegramUserId' => $recipient->id,
+                    'telegramId' => $recipient->telegram_id,
+                    'totalDuration' => round(
+                        microtime(true) - $recipientStartedAt,
+                        3
+                    ),
+                ]);
             }
         }
 
@@ -121,8 +169,10 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
             'users' => count($recipients),
             'success' => $success,
             'failed' => $failed,
+            'skipped' => $skipped,
             'messageType' => $this->messageType,
             'duration' => round(microtime(true) - $startedAt, 3),
+            'attempt' => $this->attempts(),
         ]);
     }
 
@@ -133,16 +183,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         Api $telegram,
         TelegramUser $recipient,
     ): array {
-        /*
-        |--------------------------------------------------------------------------
-        | Sticker
-        |--------------------------------------------------------------------------
-        |
-        | Sticker не поддерживает HTML caption.
-        | Отправляем HTML-текст отдельным сообщением, затем sticker.
-        |--------------------------------------------------------------------------
-        */
-
         if ($this->messageType === 'sticker') {
             if (!$this->mediaFileId) {
                 throw new \RuntimeException(
@@ -168,12 +208,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
             return $messages;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Обычный текст
-        |--------------------------------------------------------------------------
-        */
-
         if ($this->messageType === 'text') {
             return [
                 $telegram->sendMessage([
@@ -183,12 +217,6 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                 ]),
             ];
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Медиа с HTML-подписью
-        |--------------------------------------------------------------------------
-        */
 
         if (!$this->mediaFileId) {
             throw new \RuntimeException(

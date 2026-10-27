@@ -1,6 +1,5 @@
 FROM php:8.2-fpm
 
-
 RUN apt-get update && apt-get install -y \
     git \
     unzip \
@@ -10,13 +9,12 @@ RUN apt-get update && apt-get install -y \
     && docker-php-ext-install \
     pdo \
     pdo_mysql \
-    zip
-
+    zip \
+    pcntl \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-
 WORKDIR /var/www
-
 
 CMD ["php-fpm"]

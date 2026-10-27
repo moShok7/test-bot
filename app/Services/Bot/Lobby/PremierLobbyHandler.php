@@ -4,6 +4,7 @@ namespace App\Services\Bot\Lobby;
 
 use App\Models\BotSession;
 use App\Models\TelegramUser;
+use App\Jobs\PremierLobbyNotificationJob;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -268,6 +269,24 @@ class PremierLobbyHandler
                         'created_at' => now(),
                         'updated_at' => now(),
                     ]);
+
+                // Рассылаем объявление всем зарегистрированным пользователям,
+                // кроме создателя премьерного лобби.
+                $chatIds = TelegramUser::query()
+                    ->whereNotNull('telegram_id')
+                    ->where('telegram_id', '!=', $user->telegram_id)
+                    ->pluck('telegram_id')
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                PremierLobbyNotificationJob::dispatch(
+                    'published',
+                    [
+                        'premier_lobby_id' => $premierLobbyId,
+                        'chat_ids' => $chatIds,
+                    ]
+                )->onQueue('telegram');
 
                 $session->delete();
 
