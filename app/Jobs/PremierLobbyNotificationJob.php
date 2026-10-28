@@ -201,14 +201,24 @@ class PremierLobbyNotificationJob implements ShouldQueue
             . "{$lobby->title}\n\n"
             . ($lobby->description ?: 'Описание не указано')
             . "\n\n🗓 Начало: {$startTime}"
-            . "\n\nЧтобы подать заявку, откройте бота "
-            . 'и выберите премьерное лобби.';
+            . "\n\nНажмите кнопку ниже, чтобы подать заявку.";
 
         foreach (array_unique($chatIds) as $chatId) {
             try {
                 Telegram::bot()->sendMessage([
                     'chat_id' => $chatId,
                     'text' => $message,
+                    'reply_markup' => json_encode([
+                        'inline_keyboard' => [
+                            [
+                                [
+                                    'text' => '📝 Подать заявку',
+                                    'callback_data' =>
+                                    'premier_apply_' . $lobby->id,
+                                ],
+                            ],
+                        ],
+                    ], JSON_UNESCAPED_UNICODE),
                 ]);
             } catch (\Throwable $e) {
                 Log::warning(
