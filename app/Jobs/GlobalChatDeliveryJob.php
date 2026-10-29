@@ -29,6 +29,11 @@ class GlobalChatDeliveryJob implements ShouldQueue
     public int $timeout = 120;
 
     /**
+     * Размер пакета получателей.
+     */
+    private const BATCH_SIZE = 25;
+
+    /**
      * Задержки перед повторными попытками.
      */
     public function backoff(): array
@@ -48,7 +53,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
         public string $messageType,
         public ?string $mediaFileId,
     ) {
-        $this->onQueue('telegram');
+        $this->onQueue('broadcast');
     }
 
     /**
@@ -100,11 +105,11 @@ class GlobalChatDeliveryJob implements ShouldQueue
 
             /*
             |--------------------------------------------------------------------------
-            | Разбиваем получателей на пакеты по 50
+            | Разбиваем получателей на пакеты
             |--------------------------------------------------------------------------
             */
 
-            $batches = array_chunk($telegramUserIds, 50);
+            $batches = array_chunk($telegramUserIds, self::BATCH_SIZE);
 
             $dispatched = 0;
 
@@ -118,7 +123,7 @@ class GlobalChatDeliveryJob implements ShouldQueue
                     messageType: $this->messageType,
                     mediaFileId: $this->mediaFileId,
                     telegramUserIds: $userIds,
-                )->onQueue('telegram');
+                )->onQueue('broadcast');
 
                 $dispatched++;
 

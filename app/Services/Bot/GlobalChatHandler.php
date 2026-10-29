@@ -15,6 +15,23 @@ use Throwable;
 class GlobalChatHandler
 {
     /**
+     * Максимальная длина текста для рассылки (лимит Telegram 4096,
+     * запас под имя автора и цитату).
+     */
+    private const MAX_TEXT_LENGTH = 3500;
+
+    /**
+     * Максимальная длина подписи к медиа (лимит Telegram 1024,
+     * запас под имя автора и цитату).
+     */
+    private const MAX_CAPTION_LENGTH = 600;
+
+    /**
+     * Максимальная длина цитаты в ответе на сообщение.
+     */
+    private const MAX_REPLY_QUOTE_LENGTH = 100;
+
+    /**
      * Обработка сообщений глобального чата.
      */
     public function handle($message, Api $telegram): bool
@@ -164,6 +181,31 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
+            | Текст для рассылки: обрезаем под лимиты Telegram
+            |--------------------------------------------------------------------------
+            |
+            | В базе сохраняется полный текст, получателям уходит
+            | обрезанный, иначе Telegram отклонит слишком длинное сообщение.
+            |--------------------------------------------------------------------------
+            */
+
+            $maxLength = $messageType === 'text'
+                ? self::MAX_TEXT_LENGTH
+                : self::MAX_CAPTION_LENGTH;
+
+            $displayText = $text;
+
+            if (mb_strlen($displayText, 'UTF-8') > $maxLength) {
+                $displayText = mb_substr(
+                    $displayText,
+                    0,
+                    $maxLength,
+                    'UTF-8'
+                ) . '…';
+            }
+
+            /*
+            |--------------------------------------------------------------------------
             | Медиа
             |--------------------------------------------------------------------------
             */
@@ -260,6 +302,18 @@ class GlobalChatHandler
                         $replyText = 'Сообщение';
                     }
 
+                    if (
+                        mb_strlen($replyText, 'UTF-8')
+                        > self::MAX_REPLY_QUOTE_LENGTH
+                    ) {
+                        $replyText = mb_substr(
+                            $replyText,
+                            0,
+                            self::MAX_REPLY_QUOTE_LENGTH,
+                            'UTF-8'
+                        ) . '…';
+                    }
+
                     $chatText .= '↩️ <a href="tg://user?id='
                         . $replyAuthorId
                         . '"><b>'
@@ -295,7 +349,7 @@ class GlobalChatHandler
             |--------------------------------------------------------------------------
             */
 
-            $chatText .= $this->formatTextWithMentions($text);
+            $chatText .= $this->formatTextWithMentions($displayText);
 
             /*
             |--------------------------------------------------------------------------
@@ -317,7 +371,7 @@ class GlobalChatHandler
                 entities: [],
                 messageType: $messageType,
                 mediaFileId: $mediaFileId,
-            )->onQueue('telegram');
+            )->onQueue('broadcast');
 
             Log::info(
                 'GlobalChatDeliveryJob DISPATCHED FROM HANDLER',
