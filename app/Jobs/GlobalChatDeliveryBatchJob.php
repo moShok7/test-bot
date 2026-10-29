@@ -22,12 +22,12 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 5;
-
     public int $timeout = 120;
+    public bool $failOnTimeout = true;
 
     public function backoff(): array
     {
-        return [5, 15, 30];
+        return [5, 15, 30, 60];
     }
 
     public function __construct(
@@ -40,13 +40,14 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         public ?string $mediaFileId,
         public array $telegramUserIds,
     ) {
+        $this->onQueue('broadcast');
     }
 
     public function handle(Api $telegram): void
     {
         $startedAt = microtime(true);
 
-        if (empty($this->telegramUserIds)) {
+        if ($this->telegramUserIds === []) {
             return;
         }
 
@@ -61,61 +62,113 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         $skipped = 0;
 
         foreach ($recipients as $recipient) {
-            // Занимаем слот доставки. Уникальный индекс гарантирует,
-            // что вставка пройдёт только у одного воркера.
-            try {
-                $delivery = ChatMessageDelivery::create([
-                    'chat_message_id' => $this->chatMessageId,
-                    'telegram_user_id' => $recipient->id,
-                    'telegram_message_id' => 0,
-                ]);
-            } catch (QueryException $e) {
-                if ((string) $e->getCode() === '23000') {
-                    $skipped++;
-                    continue;
-                }
+            $delivery = $this->findOrCreateDelivery($recipient);
 
-                throw $e;
+            if (!$delivery) {
+                $skipped++;
+                continue;
+            }
+
+            // Successful deliveries are immutable: a retry must not resend them.
+            if ((int) $delivery->telegram_message_id > 0 || $delivery->status === 'sent') {
+                if ($delivery->status !== 'sent') {
+                    $delivery->forceFill(['status' => 'sent', 'processing_at' => null])->save();
+                }
+                $skipped++;
+                continue;
+            }
+
+            // Atomically claim a pending/failed row, or recover a processing row
+            // abandoned for more than 5 minutes by a dead worker.
+            $staleBefore = now()->subMinutes(5);
+            $claimed = ChatMessageDelivery::query()
+                ->whereKey($delivery->getKey())
+                ->where(function ($query) use ($staleBefore) {
+                    $query->whereIn('status', ['pending', 'failed'])
+                        ->orWhere(function ($query) use ($staleBefore) {
+                            $query->where('status', 'processing')
+                                ->where('processing_at', '<', $staleBefore);
+                        });
+                })
+                ->update([
+                    'status' => 'processing',
+                    'processing_at' => now(),
+                ]);
+
+            if ($claimed !== 1) {
+                $skipped++;
+                continue;
             }
 
             try {
-                $sent = $this->sendToRecipient($telegram, $recipient);
-
-                $last = collect($sent)->filter()->last();
-
-                $delivery->update([
-                    'telegram_message_id' => $last
-                        ? (int) $last->getMessageId()
-                        : 0,
+                Log::info('GlobalChat sending recipient', [
+                    'chatMessageId' => $this->chatMessageId,
+                    'telegramUserId' => $recipient->telegram_id,
+                    'attempt' => $this->attempts(),
                 ]);
 
-                $success++;
+                $sent = $this->sendToRecipient($telegram, $recipient);
+                $last = collect($sent)->filter()->last();
+                $messageId = $last ? (int) $last->getMessageId() : 0;
 
-                // Не упираемся в лимит Telegram (~30 сообщений/сек)
+                if ($messageId <= 0) {
+                    throw new \RuntimeException('Telegram returned no message ID');
+                }
+
+                $delivery->refresh();
+                $delivery->forceFill([
+                    'telegram_message_id' => $messageId,
+                    'status' => 'sent',
+                    'processing_at' => null,
+                ])->save();
+
+                $success++;
+                Log::info('GlobalChat recipient sent', [
+                    'chatMessageId' => $this->chatMessageId,
+                    'telegramUserId' => $recipient->telegram_id,
+                    'telegramMessageId' => $messageId,
+                ]);
+
+                // Conservative pacing for Telegram broadcasts.
                 usleep(50_000);
             } catch (Throwable $e) {
-                // Освобождаем слот, чтобы повторная попытка могла
-                // доставить это сообщение.
-                $delivery->delete();
+                $message = $e->getMessage();
 
-                // Лимит Telegram: откладываем весь батч и выходим.
-                if (preg_match('/retry after (\d+)/i', $e->getMessage(), $m)) {
+                if (preg_match('/retry after\s+(\d+)/i', $message, $matches)) {
+                    $delivery->forceFill([
+                        'status' => 'pending',
+                        'processing_at' => null,
+                    ])->save();
+
+                    $delay = min(3600, max(1, (int) $matches[1] + 1));
                     Log::warning('GlobalChat 429, releasing batch', [
                         'chatMessageId' => $this->chatMessageId,
-                        'retryAfter' => (int) $m[1],
+                        'retryAfter' => $delay,
+                        'telegramUserId' => $recipient->telegram_id,
                     ]);
-
-                    $this->release((int) $m[1] + 1);
-
+                    $this->release($delay);
                     return;
                 }
 
+                $this->handleTelegramError($recipient, $e);
+                $lowerMessage = mb_strtolower($message);
+                $permanent = str_contains($lowerMessage, 'bot was blocked')
+                    || str_contains($lowerMessage, 'user is deactivated')
+                    || str_contains($lowerMessage, 'chat not found')
+                    || str_contains($lowerMessage, 'forbidden');
+
+                $delivery->forceFill([
+                    'status' => $permanent ? 'failed' : 'pending',
+                    'processing_at' => null,
+                ])->save();
+
                 $failed++;
 
-                $this->handleTelegramError(
-                    recipient: $recipient,
-                    exception: $e,
-                );
+                // Retry the batch for transient failures. Rows already marked sent
+                // are skipped on the next attempt.
+                if (!$permanent) {
+                    throw $e;
+                }
             }
         }
 
@@ -131,20 +184,35 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         ]);
     }
 
-    /**
-     * Отправляет сообщение одному пользователю.
-     */
-    private function sendToRecipient(
-        Api $telegram,
-        TelegramUser $recipient,
-    ): array {
+    private function findOrCreateDelivery(TelegramUser $recipient): ?ChatMessageDelivery
+    {
+        try {
+            return ChatMessageDelivery::query()->create([
+                'chat_message_id' => $this->chatMessageId,
+                'telegram_user_id' => $recipient->id,
+                'telegram_message_id' => 0,
+            ]);
+        } catch (QueryException $e) {
+            // SQLSTATE 23000 is a duplicate-key error on MySQL. Re-throw other DB errors.
+            if ((string) $e->getCode() !== '23000') {
+                throw $e;
+            }
+
+            return ChatMessageDelivery::query()
+                ->where('chat_message_id', $this->chatMessageId)
+                ->where('telegram_user_id', $recipient->id)
+                ->first();
+        }
+    }
+
+    private function sendToRecipient(Api $telegram, TelegramUser $recipient): array
+    {
         if ($this->messageType === 'sticker') {
             if (!$this->mediaFileId) {
                 throw new \RuntimeException('Sticker file_id is empty');
             }
 
             $messages = [];
-
             if ($this->chatText !== '') {
                 $messages[] = $telegram->sendMessage([
                     'chat_id' => $recipient->telegram_id,
@@ -152,92 +220,62 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
                     'parse_mode' => 'HTML',
                 ]);
             }
-
             $messages[] = $telegram->sendSticker([
                 'chat_id' => $recipient->telegram_id,
                 'sticker' => $this->mediaFileId,
             ]);
-
             return $messages;
         }
 
         if ($this->messageType === 'text') {
-            return [
-                $telegram->sendMessage([
-                    'chat_id' => $recipient->telegram_id,
-                    'text' => $this->chatText,
-                    'parse_mode' => 'HTML',
-                ]),
-            ];
+            return [$telegram->sendMessage([
+                'chat_id' => $recipient->telegram_id,
+                'text' => $this->chatText,
+                'parse_mode' => 'HTML',
+            ])];
         }
 
         if (!$this->mediaFileId) {
             throw new \RuntimeException('Media file_id is empty');
         }
 
-        $sendParams = [
-            'chat_id' => $recipient->telegram_id,
-        ];
-
+        $params = ['chat_id' => $recipient->telegram_id];
         if ($this->chatText !== '') {
-            $sendParams['caption'] = $this->chatText;
-            $sendParams['parse_mode'] = 'HTML';
+            $params['caption'] = $this->chatText;
+            $params['parse_mode'] = 'HTML';
         }
-
-        return [
-            $this->sendMedia(
-                telegram: $telegram,
-                sendParams: $sendParams,
-            ),
-        ];
+        return [$this->sendMedia($telegram, $params)];
     }
 
-    /**
-     * Отправляет медиа соответствующего типа.
-     */
-    private function sendMedia(Api $telegram, array $sendParams)
+    private function sendMedia(Api $telegram, array $params)
     {
         switch ($this->messageType) {
             case 'animation':
-                $sendParams['animation'] = $this->mediaFileId;
-                return $telegram->sendAnimation($sendParams);
-
+                $params['animation'] = $this->mediaFileId;
+                return $telegram->sendAnimation($params);
             case 'voice':
-                $sendParams['voice'] = $this->mediaFileId;
-                return $telegram->sendVoice($sendParams);
-
+                $params['voice'] = $this->mediaFileId;
+                return $telegram->sendVoice($params);
             case 'video':
-                $sendParams['video'] = $this->mediaFileId;
-                return $telegram->sendVideo($sendParams);
-
+                $params['video'] = $this->mediaFileId;
+                return $telegram->sendVideo($params);
             case 'photo':
-                $sendParams['photo'] = $this->mediaFileId;
-                return $telegram->sendPhoto($sendParams);
-
+                $params['photo'] = $this->mediaFileId;
+                return $telegram->sendPhoto($params);
             case 'audio':
-                $sendParams['audio'] = $this->mediaFileId;
-                return $telegram->sendAudio($sendParams);
-
+                $params['audio'] = $this->mediaFileId;
+                return $telegram->sendAudio($params);
             case 'document':
-                $sendParams['document'] = $this->mediaFileId;
-                return $telegram->sendDocument($sendParams);
-
+                $params['document'] = $this->mediaFileId;
+                return $telegram->sendDocument($params);
             default:
-                throw new \RuntimeException(
-                    'Unsupported media type: ' . $this->messageType
-                );
+                throw new \RuntimeException('Unsupported media type: ' . $this->messageType);
         }
     }
 
-    /**
-     * Обрабатывает ошибки отправки.
-     */
-    private function handleTelegramError(
-        TelegramUser $recipient,
-        Throwable $exception,
-    ): void {
+    private function handleTelegramError(TelegramUser $recipient, Throwable $exception): void
+    {
         $message = $exception->getMessage();
-
         Log::warning('Global chat send error', [
             'chat_message_id' => $this->chatMessageId,
             'telegram_user_id' => $recipient->id,
@@ -247,14 +285,12 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         ]);
 
         $lowerMessage = mb_strtolower($message);
-
-        $shouldDisableNotifications =
-            str_contains($lowerMessage, 'bot was blocked')
+        $disable = str_contains($lowerMessage, 'bot was blocked')
             || str_contains($lowerMessage, 'user is deactivated')
             || str_contains($lowerMessage, 'chat not found')
             || str_contains($lowerMessage, 'forbidden');
 
-        if (!$shouldDisableNotifications) {
+        if (!$disable) {
             return;
         }
 
