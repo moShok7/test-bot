@@ -57,6 +57,23 @@ services:
       - mysql
     networks:
       - sus_lobby_network
+      
+  telegram_mute_listener:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: sus_lobby_mute_listener
+    command: php artisan telegram:mute-listener
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - sus_lobby_network
 
   telegram_bot:
     build:
