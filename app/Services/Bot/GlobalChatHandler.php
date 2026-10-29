@@ -3,7 +3,6 @@
 namespace App\Services\Bot;
 
 use App\Jobs\GlobalChatDeliveryJob;
-use App\Models\BotSession;
 use App\Models\BotGroup;
 use App\Models\ChatMessage;
 use App\Models\ChatMessageDelivery;
@@ -14,23 +13,6 @@ use Throwable;
 
 class GlobalChatHandler
 {
-    /**
-     * Максимальная длина текста для рассылки (лимит Telegram 4096,
-     * запас под имя автора и цитату).
-     */
-    private const MAX_TEXT_LENGTH = 3500;
-
-    /**
-     * Максимальная длина подписи к медиа (лимит Telegram 1024,
-     * запас под имя автора и цитату).
-     */
-    private const MAX_CAPTION_LENGTH = 600;
-
-    /**
-     * Максимальная длина цитаты в ответе на сообщение.
-     */
-    private const MAX_REPLY_QUOTE_LENGTH = 100;
-
     /**
      * Обработка сообщений глобального чата.
      */
@@ -88,6 +70,12 @@ class GlobalChatHandler
                 return false;
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Тип сообщения
+            |--------------------------------------------------------------------------
+            */
+
             $messageType = $this->detectMessageType($message);
 
             if ($messageType === null) {
@@ -118,52 +106,22 @@ class GlobalChatHandler
 
             $username = $from->getUsername();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Пользователь
+            |--------------------------------------------------------------------------
+            */
+
             $telegramUser = TelegramUser::updateOrCreate(
-                ['telegram_id' => $telegramUserId],
+                [
+                    'telegram_id' => $telegramUserId,
+                ],
                 [
                     'username' => $username,
                     'first_name' => $firstName,
                     'last_name' => $lastName,
                 ]
             );
-
-            /*
-            |--------------------------------------------------------------------------
-            | ЗАЩИТА: не отправлять ввод профиля в глобальный чат
-            |--------------------------------------------------------------------------
-            */
-
-            if (!empty($telegramUser->profile_editing)) {
-                return true;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | ЗАЩИТА: не отправлять ввод игрового профиля в глобальный чат
-            |--------------------------------------------------------------------------
-            |
-            | Проверяем только шаги игрового профиля, чтобы случайные
-            | BotSession других функций не блокировали глобальный чат.
-            |--------------------------------------------------------------------------
-            */
-
-            $gameProfileSteps = [
-                'nickname',
-                'game_id',
-                'screenshot',
-                'edit_nickname',
-                'edit_game_id',
-                'edit_screenshot',
-            ];
-
-            $isEditingGameProfile = BotSession::query()
-                ->where('telegram_user_id', $telegramUser->id)
-                ->whereIn('step', $gameProfileSteps)
-                ->exists();
-
-            if ($isEditingGameProfile) {
-                return true;
-            }
 
             /*
             |--------------------------------------------------------------------------
@@ -181,32 +139,7 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Текст для рассылки: обрезаем под лимиты Telegram
-            |--------------------------------------------------------------------------
-            |
-            | В базе сохраняется полный текст, получателям уходит
-            | обрезанный, иначе Telegram отклонит слишком длинное сообщение.
-            |--------------------------------------------------------------------------
-            */
-
-            $maxLength = $messageType === 'text'
-                ? self::MAX_TEXT_LENGTH
-                : self::MAX_CAPTION_LENGTH;
-
-            $displayText = $text;
-
-            if (mb_strlen($displayText, 'UTF-8') > $maxLength) {
-                $displayText = mb_substr(
-                    $displayText,
-                    0,
-                    $maxLength,
-                    'UTF-8'
-                ) . '…';
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Медиа
+            | Идентификатор медиа
             |--------------------------------------------------------------------------
             */
 
@@ -217,11 +150,16 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Reply: поиск исходного сообщения
+            | Reply: ищем исходное сообщение по delivery
+            |--------------------------------------------------------------------------
+            |
+            | telegram_message_id — ID сообщения в Telegram,
+            | telegram_user_id — внутренний ID пользователя БД.
             |--------------------------------------------------------------------------
             */
 
             $replyToChatMessage = null;
+
             $replyMessage = $message->getReplyToMessage();
 
             if ($replyMessage) {
@@ -248,7 +186,14 @@ class GlobalChatHandler
 
             /*
             |--------------------------------------------------------------------------
-            | Сохранение сообщения в БД
+            | Сохраняем сообщение в существующую схему БД
+            |--------------------------------------------------------------------------
+            |
+            | В chat_messages сейчас существуют только:
+            | id, telegram_user_id, message, created_at, updated_at.
+            |
+            | Поэтому не записываем telegram_message_id,
+            | message_type и file_id в несуществующие столбцы.
             |--------------------------------------------------------------------------
             */
 
@@ -256,22 +201,25 @@ class GlobalChatHandler
                 ? $text
                 : '[' . $messageType . ']';
 
-            $chatMessage = ChatMessage::create([
-                'telegram_user_id' => $telegramUser->id,
-                'message' => $storedMessage,
-            ]);
+            $chatMessage = ChatMessage::create(
+                [
+                    'telegram_user_id' => $telegramUser->id,
+                    'message' => $storedMessage,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Формирование HTML
+            | Собираем сообщение для рассылки
             |--------------------------------------------------------------------------
             */
 
             $chatText = '';
+            $entities = [];
 
             /*
             |--------------------------------------------------------------------------
-            | Ответ на сообщение
+            | Блок ответа
             |--------------------------------------------------------------------------
             */
 
@@ -283,16 +231,11 @@ class GlobalChatHandler
                 if ($replyAuthor) {
                     $replyAuthorName = trim(
                         (string) $replyAuthor->first_name
-                        . ' '
-                        . (string) $replyAuthor->last_name
                     );
 
                     if ($replyAuthorName === '') {
                         $replyAuthorName = 'Пользователь';
                     }
-
-                    $replyAuthorId = (int)
-                        $replyAuthor->telegram_id;
 
                     $replyText = trim(
                         (string) $replyToChatMessage->message
@@ -302,62 +245,124 @@ class GlobalChatHandler
                         $replyText = 'Сообщение';
                     }
 
-                    if (
-                        mb_strlen($replyText, 'UTF-8')
-                        > self::MAX_REPLY_QUOTE_LENGTH
-                    ) {
-                        $replyText = mb_substr(
-                            $replyText,
-                            0,
-                            self::MAX_REPLY_QUOTE_LENGTH,
-                            'UTF-8'
-                        ) . '…';
-                    }
+                    $replyPrefix = '↩️ ';
 
-                    $chatText .= '↩️ <a href="tg://user?id='
-                        . $replyAuthorId
-                        . '"><b>'
-                        . $this->escapeHtml($replyAuthorName)
-                        . '</b></a>'
+                    $authorOffset = $this->utf16Length(
+                        $replyPrefix
+                    );
+
+                    $authorLength = $this->utf16Length(
+                        $replyAuthorName
+                    );
+
+                    $chatText .=
+                        $replyPrefix
+                        . $replyAuthorName
                         . "\n"
-                        . $this->escapeHtml($replyText)
+                        . $replyText
                         . "\n\n";
+
+                    $entities[] = [
+                        'type' => 'text_link',
+                        'offset' => $authorOffset,
+                        'length' => $authorLength,
+                        'url' => 'tg://openmessage?user_id='
+                            . (int) $replyAuthor->telegram_id,
+                    ];
+
+                    $entities[] = [
+                        'type' => 'bold',
+                        'offset' => $authorOffset,
+                        'length' => $authorLength,
+                    ];
                 }
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Имя автора: HTML-ссылка на профиль
+            | Имя автора
             |--------------------------------------------------------------------------
             */
 
-            $authorName = trim($firstName . ' ' . $lastName);
+            $authorName = $firstName !== ''
+                ? $firstName
+                : 'Пользователь';
 
-            if ($authorName === '') {
-                $authorName = 'Пользователь';
+            $authorOffset = $this->utf16Length($chatText);
+            $authorLength = $this->utf16Length($authorName);
+
+            $chatText .= $authorName;
+
+            $entities[] = [
+                'type' => 'text_link',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
+                'url' => 'tg://openmessage?user_id='
+                    . $telegramUserId,
+            ];
+
+            $entities[] = [
+                'type' => 'bold',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
+            ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Иконка пользователя и текст
+            |--------------------------------------------------------------------------
+            */
+
+            $chatText .= "\n";
+
+            $icon = $telegramUser->chat_icon ?: '🟠';
+
+            $chatText .= $icon . ': ';
+
+            $textStartOffset = $this->utf16Length($chatText);
+
+            $chatText .= $text;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Упоминания @username
+            |--------------------------------------------------------------------------
+            */
+
+            if ($text !== '') {
+                $mentionedUsers = $this->findMentionedUsers($text);
+
+                foreach ($mentionedUsers as $mention) {
+                    $mentionedUser = $mention['user'];
+
+                    $beforeMention = mb_substr(
+                        $text,
+                        0,
+                        $mention['offset'],
+                        'UTF-8'
+                    );
+
+                    $mentionValue = mb_substr(
+                        $text,
+                        $mention['offset'],
+                        $mention['length'],
+                        'UTF-8'
+                    );
+
+                    $entities[] = [
+                        'type' => 'text_link',
+                        'offset' => $textStartOffset
+                            + $this->utf16Length($beforeMention),
+                        'length' => $this->utf16Length($mentionValue),
+                        'url' => 'tg://openmessage?user_id='
+                            . (int) $mentionedUser->telegram_id,
+                    ];
+                }
             }
 
-            $chatText .= '<a href="tg://user?id='
-                . $telegramUserId
-                . '"><b>'
-                . $this->escapeHtml($authorName)
-                . '</b></a>: ';
-
             /*
             |--------------------------------------------------------------------------
-            | Текст с кликабельными @username
-            |--------------------------------------------------------------------------
-            */
-
-            $chatText .= $this->formatTextWithMentions($displayText);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Отправка задачи в очередь
-            |--------------------------------------------------------------------------
-            |
-            | entities оставляем пустым массивом для совместимости
-            | с существующим GlobalChatDeliveryJob.
+            | Отправляем задачу в очередь telegram
             |--------------------------------------------------------------------------
             */
 
@@ -368,10 +373,10 @@ class GlobalChatHandler
                     : null,
                 authorTelegramId: $telegramUserId,
                 chatText: $chatText,
-                entities: [],
+                entities: $entities,
                 messageType: $messageType,
                 mediaFileId: $mediaFileId,
-            )->onQueue('broadcast');
+            )->onQueue('telegram');
 
             Log::info(
                 'GlobalChatDeliveryJob DISPATCHED FROM HANDLER',
@@ -396,83 +401,6 @@ class GlobalChatHandler
 
             return false;
         }
-    }
-
-    /**
-     * Экранирует текст для Telegram HTML.
-     */
-    private function escapeHtml(string $text): string
-    {
-        return htmlspecialchars(
-            $text,
-            ENT_QUOTES | ENT_SUBSTITUTE,
-            'UTF-8'
-        );
-    }
-
-    /**
-     * Преобразует известные @username в HTML-ссылки.
-     * Остальной текст безопасно экранируется.
-     */
-    private function formatTextWithMentions(string $text): string
-    {
-        if ($text === '') {
-            return '';
-        }
-
-        preg_match_all(
-            '/@([a-zA-Z0-9_]{5,32})/u',
-            $text,
-            $matches,
-            PREG_OFFSET_CAPTURE
-        );
-
-        if (empty($matches[0])) {
-            return $this->escapeHtml($text);
-        }
-
-        $result = '';
-        $cursor = 0;
-
-        foreach ($matches[0] as $index => $match) {
-            $fullMention = $match[0];
-            $byteOffset = $match[1];
-
-            $username = $matches[1][$index][0];
-
-            $result .= $this->escapeHtml(
-                substr(
-                    $text,
-                    $cursor,
-                    $byteOffset - $cursor
-                )
-            );
-
-            $user = TelegramUser::query()
-                ->whereRaw(
-                    'LOWER(username) = ?',
-                    [mb_strtolower($username, 'UTF-8')]
-                )
-                ->first();
-
-            if ($user) {
-                $result .= '<a href="tg://user?id='
-                    . (int) $user->telegram_id
-                    . '">'
-                    . $this->escapeHtml($fullMention)
-                    . '</a>';
-            } else {
-                $result .= $this->escapeHtml($fullMention);
-            }
-
-            $cursor = $byteOffset + strlen($fullMention);
-        }
-
-        $result .= $this->escapeHtml(
-            substr($text, $cursor)
-        );
-
-        return $result;
     }
 
     /**
@@ -581,5 +509,83 @@ class GlobalChatHandler
         }
 
         return $media ? $media->getFileId() : null;
+    }
+
+    /**
+     * Ищет пользователей по @username.
+     */
+    private function findMentionedUsers(string $text): array
+    {
+        preg_match_all(
+            '/@([a-zA-Z0-9_]{5,32})/u',
+            $text,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
+
+        if (empty($matches[1])) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ($matches[1] as $match) {
+            $username = $match[0];
+            $byteOffset = $match[1];
+
+            $before = substr($text, 0, $byteOffset);
+
+            $characterOffset = mb_strlen(
+                $before,
+                'UTF-8'
+            );
+
+            $user = TelegramUser::query()
+                ->whereRaw(
+                    'LOWER(username) = ?',
+                    [
+                        mb_strtolower(
+                            $username,
+                            'UTF-8'
+                        ),
+                    ]
+                )
+                ->first();
+
+            if (!$user) {
+                continue;
+            }
+
+            $result[] = [
+                'user' => $user,
+                'offset' => $characterOffset,
+                'length' => mb_strlen(
+                    '@' . $username,
+                    'UTF-8'
+                ),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Telegram использует UTF-16 offsets для entities.
+     */
+    private function utf16Length(string $text): int
+    {
+        if ($text === '') {
+            return 0;
+        }
+
+        return (int) (
+            strlen(
+                mb_convert_encoding(
+                    $text,
+                    'UTF-16LE',
+                    'UTF-8'
+                )
+            ) / 2
+        );
     }
 }
