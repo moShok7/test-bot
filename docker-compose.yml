@@ -101,6 +101,7 @@ services:
     networks:
       - sus_lobby_network
 
+  # Быстрые задачи бота (не рассылка)
   worker_telegram_1:
     build:
       context: .
@@ -118,12 +119,13 @@ services:
     networks:
       - sus_lobby_network
 
-  worker_telegram_2:
+  # Рассылка глобального чата (отдельная очередь, чтобы не блокировать бота)
+  worker_broadcast_1:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_worker_telegram_2
-    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
+    container_name: sus_lobby_worker_broadcast_1
+    command: php artisan queue:work --queue=broadcast --sleep=1 --tries=5 --timeout=120 --max-jobs=200
     env_file:
       - .env
     volumes:
@@ -135,12 +137,12 @@ services:
     networks:
       - sus_lobby_network
 
-  worker_telegram_3:
+  worker_broadcast_2:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_worker_telegram_3
-    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
+    container_name: sus_lobby_worker_broadcast_2
+    command: php artisan queue:work --queue=broadcast --sleep=1 --tries=5 --timeout=120 --max-jobs=200
     env_file:
       - .env
     volumes:
