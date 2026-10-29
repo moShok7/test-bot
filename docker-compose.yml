@@ -26,10 +26,17 @@ services:
     networks:
       - sus_lobby_network
 
+  
   mysql:
     image: mariadb:10.4
     container_name: sus_lobby_mysql
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     environment:
       MYSQL_DATABASE: sus_lobby
       MYSQL_USER: laravel
@@ -41,6 +48,7 @@ services:
       - sus-lobby_mysql_data:/var/lib/mysql
     networks:
       - sus_lobby_network
+
 
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
