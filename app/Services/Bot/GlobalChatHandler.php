@@ -134,7 +134,7 @@ class GlobalChatHandler
                     ? $firstName
                     : 'Пользователь';
 
-                $profileUrl = 'tg://openmessage?user_id=' . $telegramUserId;
+                $profileUrl = 'tg://user?id=' . $telegramUserId;
             }
 
             $separator = ': ';
