@@ -111,7 +111,7 @@ class GlobalChatHandler
             }
 
             /*
-             * Сохраняем сообщение в текущую схему БД.
+             * Сохраняем сообщение в БД.
              */
             $storedMessage = $text !== ''
                 ? $text
@@ -123,8 +123,7 @@ class GlobalChatHandler
             ]);
 
             /*
-             * Формируем сообщение в одну строку:
-             * @username: сообщение
+             * Формируем сообщение глобального чата.
              */
             if (!empty($username)) {
                 $authorName = '@' . ltrim($username, '@');
@@ -137,25 +136,96 @@ class GlobalChatHandler
                 $profileUrl = 'tg://user?id=' . $telegramUserId;
             }
 
-            $separator = ': ';
-            $chatText = $authorName . $separator . $text;
+            $chatText = '';
+            $entities = [];
 
+            /*
+             * Блок цитаты при ответе.
+             */
+            if ($replyToChatMessage) {
+                $replyAuthor = TelegramUser::find(
+                    $replyToChatMessage->telegram_user_id
+                );
+
+                if ($replyAuthor) {
+                    $replyAuthorName = trim(
+                        (string) $replyAuthor->first_name
+                    );
+
+                    if ($replyAuthorName === '') {
+                        $replyAuthorName = 'Пользователь';
+                    }
+
+                    $replyText = trim(
+                        (string) $replyToChatMessage->message
+                    );
+
+                    if ($replyText === '') {
+                        $replyText = 'Сообщение';
+                    }
+
+                    $replyPrefix = '↩️ ';
+
+                    $replyAuthorOffset = $this->utf16Length(
+                        $replyPrefix
+                    );
+
+                    $replyAuthorLength = $this->utf16Length(
+                        $replyAuthorName
+                    );
+
+                    $chatText .= $replyPrefix
+                        . $replyAuthorName
+                        . "\n"
+                        . $replyText
+                        . "\n\n";
+
+                    $entities[] = [
+                        'type' => 'text_link',
+                        'offset' => $replyAuthorOffset,
+                        'length' => $replyAuthorLength,
+                        'url' => 'tg://openmessage?user_id='
+                            . (int) $replyAuthor->telegram_id,
+                    ];
+
+                    $entities[] = [
+                        'type' => 'bold',
+                        'offset' => $replyAuthorOffset,
+                        'length' => $replyAuthorLength,
+                    ];
+                }
+            }
+
+            /*
+             * Имя автора текущего сообщения.
+             */
+            $authorOffset = $this->utf16Length($chatText);
             $authorLength = $this->utf16Length($authorName);
-            $textStartOffset = $this->utf16Length($authorName . $separator);
 
-            $entities = [
-                [
-                    'type' => 'bold',
-                    'offset' => 0,
-                    'length' => $authorLength,
-                ],
-                [
-                    'type' => 'text_link',
-                    'offset' => 0,
-                    'length' => $authorLength,
-                    'url' => $profileUrl,
-                ],
+            $chatText .= $authorName;
+
+            $entities[] = [
+                'type' => 'bold',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
             ];
+
+            $entities[] = [
+                'type' => 'text_link',
+                'offset' => $authorOffset,
+                'length' => $authorLength,
+                'url' => $profileUrl,
+            ];
+
+            /*
+             * Текст без иконки:
+             * YkSus global: ответ
+             */
+            $chatText .= ': ';
+
+            $textStartOffset = $this->utf16Length($chatText);
+
+            $chatText .= $text;
 
             /*
              * Добавляем кликабельные упоминания.
