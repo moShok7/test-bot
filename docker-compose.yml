@@ -9,15 +9,13 @@ services:
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     networks:
       - sus_lobby_network
 
   nginx:
     image: nginx:latest
     container_name: sus_lobby_nginx
-    restart: unless-stopped
     ports:
       - "8080:80"
     volumes:
@@ -38,15 +36,9 @@ services:
       MYSQL_PASSWORD: password
       MYSQL_ROOT_PASSWORD: root
     ports:
-      - "3310:3306"
+      - "3308:3306"
     volumes:
-      - sus_lobby_mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+      - sus-lobby_mysql_data:/var/lib/mysql
     networks:
       - sus_lobby_network
 
@@ -55,15 +47,14 @@ services:
     container_name: sus_lobby_phpmyadmin
     restart: unless-stopped
     ports:
-      - "8082:80"
+      - "8081:80"
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
       PMA_USER: root
       PMA_PASSWORD: root
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     networks:
       - sus_lobby_network
 
@@ -73,35 +64,18 @@ services:
       dockerfile: docker/php/Dockerfile
     container_name: sus_lobby_bot
     command: php artisan telegram:bot
-    env_file:
-      - .env
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     restart: unless-stopped
     networks:
       - sus_lobby_network
 
-  telegram_mute_listener:
-    build:
-      context: .
-      dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_mute_listener
-    command: php artisan telegram:mute-listener
-    env_file:
-      - .env
-    volumes:
-      - ./:/var/www
-    depends_on:
-      mysql:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - sus_lobby_network
+  # ============================================================
+  # TELEGRAM WORKER 1
+  # ============================================================
 
-  # Быстрые задачи бота (не рассылка)
   worker_telegram_1:
     build:
       context: .
@@ -113,46 +87,54 @@ services:
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     restart: unless-stopped
     networks:
       - sus_lobby_network
 
-  # Рассылка глобального чата (отдельная очередь, чтобы не блокировать бота)
-  worker_broadcast_1:
+  # ============================================================
+  # TELEGRAM WORKER 2
+  # ============================================================
+
+  worker_telegram_2:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_worker_broadcast_1
-    command: php artisan queue:work --queue=broadcast --sleep=1 --tries=5 --timeout=120 --max-jobs=200
+    container_name: sus_lobby_worker_telegram_2
+    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     restart: unless-stopped
     networks:
       - sus_lobby_network
 
-  worker_broadcast_2:
+  # ============================================================
+  # TELEGRAM WORKER 3
+  # ============================================================
+
+  worker_telegram_3:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_worker_broadcast_2
-    command: php artisan queue:work --queue=broadcast --sleep=1 --tries=5 --timeout=120 --max-jobs=200
+    container_name: sus_lobby_worker_telegram_3
+    command: php artisan queue:work --queue=telegram --sleep=1 --tries=3 --timeout=120 --max-jobs=500
     env_file:
       - .env
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     restart: unless-stopped
     networks:
       - sus_lobby_network
+
+  # ============================================================
+  # DEFAULT WORKER
+  # ============================================================
 
   worker_default:
     build:
@@ -165,8 +147,7 @@ services:
     volumes:
       - ./:/var/www
     depends_on:
-      mysql:
-        condition: service_healthy
+      - mysql
     restart: unless-stopped
     networks:
       - sus_lobby_network
@@ -176,4 +157,5 @@ networks:
     enable_ipv6: false
 
 volumes:
-  sus_lobby_mysql_data:
+  sus-lobby_mysql_data:
+    external: true
