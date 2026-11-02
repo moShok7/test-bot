@@ -40,7 +40,7 @@ class TelegramBot extends Command
     |--------------------------------------------------------------------------
     */
 
-    private const MUTE_CHAT_ID = -1003793441686;
+    private const MUTE_CHAT_ID = -1004344778682;
     private const MUTE_OWNER_ID = 6537808029;
 
     public function handle(): int

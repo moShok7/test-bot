@@ -15,7 +15,7 @@ use danog\MadelineProto\EventHandler\SimpleFilter\IsReply;
 
 final class MuteEventHandler extends SimpleEventHandler
 {
-    private const CHAT_ID = -1003793441686;
+    private const CHAT_ID = -1004344778682;
 
     private ?int $selfId = null;
 
