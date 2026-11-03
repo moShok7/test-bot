@@ -64,7 +64,7 @@ services:
       - mysql
     networks:
       - test-bot_network
-      
+
   telegram_bot:
     build:
       context: .

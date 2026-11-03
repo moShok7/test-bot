@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\RoomEventController;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Api\TelegramAuthController;
 use App\Http\Controllers\TelegramWebhookController;
@@ -13,4 +14,6 @@ Route::post(
     '/telegram/webhook',
     [TelegramWebhookController::class,'handle']
 );
+
+Route::post('/room-event', [RoomEventController::class, 'store']);
 Route::post('/telegram/register', [TelegramAuthController::class, 'register']);

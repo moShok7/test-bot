@@ -7,11 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 class LobbyPlayer extends Model
 {
       protected $fillable = [
-
         'lobby_id',
         'telegram_user_id',
         'ready'
-
     ];
 
 
