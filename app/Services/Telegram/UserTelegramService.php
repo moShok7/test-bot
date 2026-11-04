@@ -2,126 +2,88 @@
 
 namespace App\Services\Telegram;
 
-use danog\MadelineProto\API;
-use danog\MadelineProto\Settings;
+use Illuminate\Support\Facades\Http;
+use RuntimeException;
 
 class UserTelegramService
 {
-    private API $telegram;
-
-    public function __construct()
+    private function request(string $method, array $params): array
     {
-        $settings = new Settings();
+        $token = config('services.telegram.bot_token');
 
-        $settings->getAppInfo()
-            ->setApiId((int) config('services.telegram.api_id'))
-            ->setApiHash(config('services.telegram.api_hash'));
+        $response = Http::timeout(30)
+            ->post("https://api.telegram.org/bot{$token}/{$method}", $params);
 
-        $this->telegram = new API(
-            storage_path('telegram/user.session'),
-            $settings
-        );
-    }
+        $data = $response->json();
 
-    public function getClient(): API
-    {
-        return $this->telegram;
-    }
-
-    /**
-     * Отправить сообщение через MTProto.
-     */
-    public function sendMessage(
-    int|string $chatId,
-    string $message,
-    ?array $replyMarkup = null
-): int {
-    $params = [
-        'peer' => $chatId,
-        'message' => $message,
-        'parse_mode' => 'HTML',
-    ];
-
-    if ($replyMarkup !== null) {
-        $params['reply_markup'] = $replyMarkup;
-    }
-
-    $response = $this->telegram->messages->sendMessage($params);
-
-    // Ответ в формате Bot API
-    if (isset($response['message_id'])) {
-        return (int) $response['message_id'];
-    }
-
-    // Ответ в формате MTProto
-    if (isset($response['updates']) && is_array($response['updates'])) {
-        foreach ($response['updates'] as $update) {
-            if (
-                isset($update['_']) &&
-                $update['_'] === 'UpdateNewMessage' &&
-                isset($update['message']['id'])
-            ) {
-                return (int) $update['message']['id'];
-            }
-
-            if (
-                isset($update['_']) &&
-                $update['_'] === 'UpdateNewChannelMessage' &&
-                isset($update['message']['id'])
-            ) {
-                return (int) $update['message']['id'];
-            }
+        if (!$response->successful() || !($data['ok'] ?? false)) {
+            throw new RuntimeException(
+                $data['description'] ?? 'Telegram API error'
+            );
         }
+
+        return $data['result'] ?? [];
     }
 
-    // Не скрываем неожиданный формат ответа
-    \Log::error('Не удалось получить message_id из ответа Telegram MTProto', [
-        'chat_id' => $chatId,
-        'response' => $response,
-    ]);
+    public function sendMessage(
+        int|string $chatId,
+        string $message,
+        ?array $replyMarkup = null
+    ): int {
+        $params = [
+            'chat_id' => $chatId,
+            'text' => $message,
+            'parse_mode' => 'HTML',
+        ];
 
-    throw new \RuntimeException(
-        'Telegram отправил сообщение, но не удалось получить message_id'
-    );
-}
+        if ($replyMarkup !== null) {
+            $params['reply_markup'] = $replyMarkup;
+        }
 
-    /**
-     * Закрепить сообщение через MTProto.
-     */
+        $result = $this->request('sendMessage', $params);
+
+        return (int) $result['message_id'];
+    }
+
+    public function editMessage(
+        int|string $chatId,
+        int $messageId,
+        string $message,
+        ?array $replyMarkup = null
+    ): void {
+        $params = [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'text' => $message,
+            'parse_mode' => 'HTML',
+        ];
+
+        if ($replyMarkup !== null) {
+            $params['reply_markup'] = $replyMarkup;
+        }
+
+        $this->request('editMessageText', $params);
+    }
+
     public function pinMessage(
         int|string $chatId,
         int $messageId
     ): void {
-        $this->telegram->messages->updatePinnedMessage(
-            peer: $chatId,
-            id: $messageId,
-            silent: true,
-        );
+        $this->request('pinChatMessage', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'disable_notification' => true,
+        ]);
     }
 
-    /**
-     * Удалить сообщение через MTProto.
-     *
-     * Для supergroup используется channels.deleteMessages.
-     * Для обычной группы используется messages.deleteMessages.
-     */
     public function deleteMessage(
         int|string $chatId,
         int $messageId,
         string $chatType = 'supergroup'
     ): void {
-        if ($chatType === 'supergroup') {
-            $this->telegram->channels->deleteMessages(
-                channel: $chatId,
-                id: [$messageId],
-            );
-
-            return;
-        }
-
-        $this->telegram->messages->deleteMessages(
-            id: [$messageId],
-            revoke: true,
-        );
+        $this->request('deleteMessage', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+        ]);
     }
 }
