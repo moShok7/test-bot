@@ -53,8 +53,8 @@ class RoomEventController extends Controller
 
         // Ищем уже существующее лобби по игровому коду.
         $lobby = Lobby::query()
-            ->where('game_room_code', $validated['room_id'])
-            ->first();
+    ->where('external_room_id', $validated['room_id'])
+    ->first();
 
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
