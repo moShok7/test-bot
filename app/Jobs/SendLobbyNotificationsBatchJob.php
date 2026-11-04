@@ -4,7 +4,6 @@ namespace App\Jobs;
 
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
-use App\Models\TelegramUser;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -14,7 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Throwable;
 
-class SendLobbyNotificationsBatchJob implements ShouldQueue
+class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 {
     use Dispatchable;
     use InteractsWithQueue;
@@ -29,16 +28,8 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         return [5, 15, 30];
     }
 
-    /**
-     * Передаются ID записей TelegramUser, не Telegram chat ID.
-     *
-     * @param array<int, int> $telegramUserIds
-     */
     public function __construct(
-        public int $lobbyId,
-        public int $creatorTelegramId,
-        public string $creatorName,
-        public array $telegramUserIds,
+        public int $lobbyId
     ) {
         $this->onQueue('telegram');
     }
@@ -47,31 +38,21 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
     {
         $lobby = Lobby::with('clan')->find($this->lobbyId);
 
-        if (
-            !$lobby ||
-            $lobby->status !== 'waiting' ||
-            empty($lobby->game_room_code)
-        ) {
-            Log::info('Личное уведомление пропущено: лобби недоступно', [
+        if (!$lobby) {
+            Log::warning('Лобби для обновления уведомлений не найдено', [
                 'lobby_id' => $this->lobbyId,
             ]);
 
             return;
         }
 
-        $gameLink = 'https://play.suspects.io/?code='
-            . rawurlencode($lobby->game_room_code);
+        $players = $lobby->current_players ?? 0;
+        $maxPlayers = $lobby->max_players ?? '?';
 
-        $creatorLink = 'tg://user?id=' . $this->creatorTelegramId;
+        $roomCode = strtoupper(trim($lobby->game_room_code ?? ''));
 
-        $creatorName = htmlspecialchars(
-            $this->creatorName,
-            ENT_QUOTES | ENT_SUBSTITUTE,
-            'UTF-8'
-        );
-
-        $roomCode = htmlspecialchars(
-            $lobby->game_room_code,
+        $safeRoomCode = htmlspecialchars(
+            $roomCode,
             ENT_QUOTES | ENT_SUBSTITUTE,
             'UTF-8'
         );
@@ -84,17 +65,34 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
             ) . ']'
             : '';
 
-        $text = "🔔 Новое лобби!\n\n"
-            . "🎮 Лобби #{$lobby->id}{$clanLabel}\n"
-            . "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n"
-            . "🔑 Код: {$roomCode}\n\n"
-            . '👇 Вход в игру:';
+        $mapName = htmlspecialchars(
+            $lobby->map_name ?: 'Неизвестно',
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
 
+        $gameMode = htmlspecialchars(
+            $lobby->game_mode ?: 'Неизвестно',
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
+
+        // Ссылка для входа в конкретное лобби
+        $gameLink = 'https://play.suspects.io/?code=' . urlencode($roomCode);
+
+        // Текст уведомления
+        $text = "🔔 <b>Лобби #{$lobby->id}{$clanLabel}</b>\n\n"
+            . "🔑 Код: <code>{$safeRoomCode}</code>\n"
+            . "👥 Игроки: {$players}/{$maxPlayers}\n"
+            . "🗺 Карта: {$mapName}\n"
+            . "👇 <b>Для входа в игру нажми кнопку ниже:</b>";
+
+        // Кнопки Telegram
         $replyMarkup = [
             'inline_keyboard' => [
                 [
                     [
-                        'text' => '🎮 Войти в игру',
+                        'text' => '🎮 Войти в лобби',
                         'url' => $gameLink,
                     ],
                 ],
@@ -102,107 +100,77 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
                     [
                         'text' => '📋 Скопировать код',
                         'copy_text' => [
-                            'text' => $lobby->game_room_code,
+                            'text' => $roomCode,
                         ],
                     ],
                 ],
             ],
         ];
 
-        $userIds = array_values(array_unique(array_map(
-            'intval',
-            $this->telegramUserIds
-        )));
-
-        $users = TelegramUser::query()
-            ->whereIn('id', $userIds)
-            ->where('telegram_id', '!=', $this->creatorTelegramId)
+        // Получаем все отправленные уведомления этого лобби
+        $notifications = LobbyNotification::query()
+            ->where('lobby_id', $lobby->id)
+            ->whereIn('chat_type', ['private', 'group'])
             ->get();
 
-        $sent = 0;
-        $skipped = 0;
+        $updated = 0;
         $failed = 0;
+        $skipped = 0;
 
-        foreach ($users as $user) {
-            // Не отправляем уведомление пользователю, который уже играет.
-            $isActive = \App\Models\LobbyPlayer::query()
-                ->where('telegram_user_id', $user->id)
-                ->whereHas('lobby', function ($query) {
-                    $query->whereIn('status', ['waiting', 'playing']);
-                })
-                ->exists();
-
-            if ($isActive) {
-                $skipped++;
-                continue;
-            }
-
-            // Защита от повторной отправки в рамках обычных повторов Job.
-            $alreadySent = LobbyNotification::query()
-                ->where('lobby_id', $lobby->id)
-                ->where('telegram_user_id', $user->id)
-                ->where('chat_type', 'private')
-                ->exists();
-
-            if ($alreadySent) {
+        foreach ($notifications as $notification) {
+            if (
+                empty($notification->chat_id) ||
+                empty($notification->telegram_message_id)
+            ) {
                 $skipped++;
                 continue;
             }
 
             try {
-                $response = $telegram->sendMessage([
-                    'chat_id' => $user->telegram_id,
+                $telegram->editMessageText([
+                    'chat_id' => $notification->chat_id,
+                    'message_id' => $notification->telegram_message_id,
                     'text' => $text,
                     'parse_mode' => 'HTML',
                     'reply_markup' => json_encode(
                         $replyMarkup,
-                        JSON_UNESCAPED_UNICODE
+                        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
                     ),
                 ]);
 
-                $messageId = $response->getMessageId();
+                $updated++;
 
-                LobbyNotification::create([
-                    'lobby_id' => $lobby->id,
-                    'telegram_user_id' => $user->id,
-                    'telegram_message_id' => $messageId,
-                    'chat_id' => (string) $user->telegram_id,
-                    'chat_type' => 'private',
-                ]);
-
-                $sent++;
-
-                try {
-                    $telegram->pinChatMessage([
-                        'chat_id' => $user->telegram_id,
-                        'message_id' => $messageId,
-                        'disable_notification' => true,
-                    ]);
-                } catch (Throwable $e) {
-                    Log::warning('Не удалось закрепить личное уведомление', [
-                        'lobby_id' => $lobby->id,
-                        'telegram_id' => $user->telegram_id,
-                        'message_id' => $messageId,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
             } catch (Throwable $e) {
+                // Telegram возвращает ошибку, если сообщение уже имеет такой текст.
+                // Это не считается критической ошибкой.
+                if (
+                    str_contains(
+                        mb_strtolower($e->getMessage()),
+                        'message is not modified'
+                    )
+                ) {
+                    $updated++;
+                    continue;
+                }
+
                 $failed++;
 
-                Log::warning('Не удалось отправить личное уведомление', [
+                Log::warning('Не удалось обновить Telegram-уведомление', [
                     'lobby_id' => $lobby->id,
-                    'telegram_id' => $user->telegram_id,
+                    'notification_id' => $notification->id,
+                    'chat_id' => $notification->chat_id,
+                    'message_id' => $notification->telegram_message_id,
                     'error' => $e->getMessage(),
                 ]);
             }
         }
 
-        Log::info('Пакет личных уведомлений обработан', [
+        Log::info('Обновление Telegram-уведомлений завершено', [
             'lobby_id' => $lobby->id,
-            'users_in_batch' => count($userIds),
-            'sent' => $sent,
-            'skipped' => $skipped,
+            'room_code' => $roomCode,
+            'updated' => $updated,
             'failed' => $failed,
+            'skipped' => $skipped,
         ]);
     }
 }
