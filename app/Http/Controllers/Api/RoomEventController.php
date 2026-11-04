@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Jobs\UpdateLobbyTelegramNotificationsJob;
 use App\Models\Lobby;
+use App\Models\RoomEvent;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -29,20 +30,35 @@ class RoomEventController extends Controller
 
         $validated = $request->validate([
             'action' => ['nullable', 'string', 'max:30'],
-            'room_code' => ['required', 'string', 'max:255'],
+            'room_id' => ['required', 'string', 'max:255'],
+            'address' => ['nullable', 'string', 'max:255'],
+            'port' => ['nullable', 'string', 'max:255'],
+            'lobby_type' => ['nullable', 'string', 'max:255'],
             'current_players' => ['sometimes', 'nullable', 'integer', 'min:0', 'max:100'],
             'map_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'game_mode' => ['sometimes', 'nullable', 'string', 'max:255'],
         ]);
 
+        // Пишем сырой ивент в историю — независимо от того, найдётся лобби или нет.
+        RoomEvent::create([
+            'action' => $validated['action'] ?? null,
+            'room_id' => $validated['room_id'],
+            'address' => $validated['address'] ?? null,
+            'port' => $validated['port'] ?? null,
+            'lobby_type' => $validated['lobby_type'] ?? null,
+            'map_name' => $validated['map_name'] ?? null,
+            'game_mode' => $validated['game_mode'] ?? null,
+            'current_players' => $validated['current_players'] ?? null,
+        ]);
+
         // Ищем уже существующее лобби по игровому коду.
         $lobby = Lobby::query()
-            ->where('game_room_code', $validated['room_code'])
+            ->where('game_room_code', $validated['room_id'])
             ->first();
 
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
-                'room_code' => $validated['room_code'],
+                'room_id' => $validated['room_id'],
                 'action' => $validated['action'] ?? null,
             ]);
 
