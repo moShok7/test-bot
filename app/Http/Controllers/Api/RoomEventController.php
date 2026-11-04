@@ -13,7 +13,7 @@ class RoomEventController extends Controller
 {
     public function store(Request $request)
     {
-        // Проверяем токен мода.
+        // Проверяем отдельный секрет мода.
         $token = $request->header('X-Auth-Token');
         $expectedToken = config('services.room_api.token');
 
@@ -28,21 +28,43 @@ class RoomEventController extends Controller
             ], 401);
         }
 
+        // Проверяем входящие данные.
         $validated = $request->validate([
             'action' => ['nullable', 'string', 'max:30'],
-            'room_id' => ['required', 'string', 'max:255'],
+
+            // Короткий код комнаты из 6 символов.
+            'room_code' => [
+                'required',
+                'string',
+                'size:6',
+                'regex:/^[A-Za-z0-9]{6}$/',
+            ],
+
+            // Внутренний ID игрового сервера.
+            'room_id' => ['nullable', 'string', 'max:255'],
+
             'address' => ['nullable', 'string', 'max:255'],
             'port' => ['nullable', 'string', 'max:255'],
             'lobby_type' => ['nullable', 'string', 'max:255'],
-            'current_players' => ['sometimes', 'nullable', 'integer', 'min:0', 'max:100'],
+
+            'current_players' => [
+                'sometimes',
+                'nullable',
+                'integer',
+                'min:0',
+                'max:100',
+            ],
+
             'map_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'game_mode' => ['sometimes', 'nullable', 'string', 'max:255'],
         ]);
 
-        // Пишем сырой ивент в историю — независимо от того, найдётся лобби или нет.
+        $roomCode = strtoupper($validated['room_code']);
+
+        // Сохраняем событие в историю.
         RoomEvent::create([
             'action' => $validated['action'] ?? null,
-            'room_id' => $validated['room_id'],
+            'room_id' => $validated['room_id'] ?? null,
             'address' => $validated['address'] ?? null,
             'port' => $validated['port'] ?? null,
             'lobby_type' => $validated['lobby_type'] ?? null,
@@ -51,20 +73,23 @@ class RoomEventController extends Controller
             'current_players' => $validated['current_players'] ?? null,
         ]);
 
-        // Ищем уже существующее лобби по игровому коду.
+        // Ищем лобби именно по короткому коду.
+        // В таблице lobbies он хранится в game_room_code.
         $lobby = Lobby::query()
-    ->where('external_room_id', $validated['room_id'])
-    ->first();
+            ->where('game_room_code', $roomCode)
+            ->first();
 
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
-                'room_id' => $validated['room_id'],
+                'room_code' => $roomCode,
+                'room_id' => $validated['room_id'] ?? null,
                 'action' => $validated['action'] ?? null,
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Lobby not found',
+                'room_code' => $roomCode,
             ], 404);
         }
 
@@ -76,6 +101,7 @@ class RoomEventController extends Controller
             ], 409);
         }
 
+        // Обновляем только переданные игровые данные.
         $fields = [
             'current_players',
             'map_name',
@@ -95,6 +121,7 @@ class RoomEventController extends Controller
                 'success' => true,
                 'message' => 'No fields to update',
                 'lobby_id' => $lobby->id,
+                'room_code' => $roomCode,
             ]);
         }
 
@@ -105,6 +132,7 @@ class RoomEventController extends Controller
                 'success' => true,
                 'message' => 'No changes',
                 'lobby_id' => $lobby->id,
+                'room_code' => $roomCode,
             ]);
         }
 
@@ -116,7 +144,8 @@ class RoomEventController extends Controller
 
         Log::info('Игровые данные лобби обновлены', [
             'lobby_id' => $lobby->id,
-            'room_code' => $lobby->game_room_code,
+            'room_code' => $roomCode,
+            'room_id' => $validated['room_id'] ?? null,
             'changes' => $changes,
         ]);
 
@@ -124,6 +153,7 @@ class RoomEventController extends Controller
             'success' => true,
             'message' => 'Lobby updated',
             'lobby_id' => $lobby->id,
+            'room_code' => $roomCode,
             'updated' => $changes,
         ]);
     }
