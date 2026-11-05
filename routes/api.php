@@ -16,7 +16,6 @@ Route::post(
     [TelegramWebhookController::class,'handle']
 );
 // routes/api.php
-Route::post('/player-link', [PlayerLinkController::class, 'store'])
-    ->middleware('auth.token'); // тот же мидлвар, что проверяет X-Auth-Token у /api/room-event
+Route::post('/player-link', [PlayerLinkController::class, 'store']);// тот же мидлвар, что проверяет X-Auth-Token у /api/room-event
 Route::post('/room-event', [RoomEventController::class, 'store']);
 Route::post('/telegram/register', [TelegramAuthController::class, 'register']);
