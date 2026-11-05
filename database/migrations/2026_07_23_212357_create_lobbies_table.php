@@ -17,7 +17,7 @@ return new class extends Migration
 
 
     // кто создал лобби в боте
-    $table->foreignId('creator_id')
+    $table->foreignId('creator_id')->nullable()
         ->constrained('telegram_users')
         ->cascadeOnDelete();
 
