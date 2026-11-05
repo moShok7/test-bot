@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Http\Controllers\Api;
@@ -7,6 +8,7 @@ use App\Jobs\UpdateLobbyTelegramNotificationsJob;
 use App\Models\Lobby;
 use App\Models\RoomEvent;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -70,111 +72,158 @@ class RoomEventController extends Controller
         $lobby = null;
         $created = false;
         $changes = [];
+        $shouldNotify = false;
 
-        DB::transaction(function () use (
-            $validated,
-            $roomCode,
-            $action,
-            &$lobby,
-            &$created,
-            &$changes
-        ) {
-            // Ищем существующую комнату.
-            $lobby = Lobby::query()
-                ->where('game_room_code', $roomCode)
-                ->lockForUpdate()
-                ->first();
+        /*
+         * Делаем до двух попыток.
+         *
+         * Если два запроса одновременно создают одну комнату,
+         * уникальный индекс не позволит создать дубликат.
+         * Второй запрос повторит транзакцию и найдёт уже созданную запись.
+         */
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $lobby = null;
+                $created = false;
+                $changes = [];
+                $shouldNotify = false;
 
-            // Если комнаты нет, создаём её только при action=create.
-            if (!$lobby) {
-                if ($action !== 'create') {
-                    return;
-                }
+                DB::transaction(function () use (
+                    $validated,
+                    $roomCode,
+                    $action,
+                    &$lobby,
+                    &$created,
+                    &$changes,
+                    &$shouldNotify
+                ) {
+                    $lobby = Lobby::query()
+                        ->where('game_room_code', $roomCode)
+                        ->lockForUpdate()
+                        ->first();
 
-                $lobby = Lobby::create([
-                    'creator_id' => null,
-                    'clan_id' => null,
-                    'game_room_code' => $roomCode,
-                    'external_room_id' => $validated['room_id'] ?? null,
-                    'status' => $validated['status'] ?? 'waiting',
-                    'current_players' => $validated['current_players'] ?? 1,
-                    'map_name' => $validated['map_name'] ?? null,
-                    'game_mode' => $validated['game_mode'] ?? null,
-                ]);
+                    // Комнаты ещё нет.
+                    if (!$lobby) {
+                        if ($action !== 'create') {
+                            return;
+                        }
 
-                $created = true;
+                        $lobby = Lobby::create([
+                            'creator_id' => null,
+                            'clan_id' => null,
+                            'game_room_code' => $roomCode,
+                            'external_room_id' => $validated['room_id'] ?? null,
+                            'status' => $validated['status'] ?? 'waiting',
+                            'current_players' => $validated['current_players'] ?? 1,
+                            'map_name' => $validated['map_name'] ?? null,
+                            'game_mode' => $validated['game_mode'] ?? null,
+                        ]);
 
-                $changes = [
-                    'current_players' => $lobby->current_players,
-                    'map_name' => $lobby->map_name,
-                    'game_mode' => $lobby->game_mode,
-                    'external_room_id' => $lobby->external_room_id,
-                    'status' => $lobby->status,
-                ];
-            } else {
-                // Обновляем только переданные поля.
-                $fields = [
-                    'current_players',
-                    'map_name',
-                    'game_mode',
-                ];
+                        $created = true;
+                        $shouldNotify = true;
 
-                foreach ($fields as $field) {
-                    if (array_key_exists($field, $validated)) {
-                        $changes[$field] = $validated[$field];
+                        $changes = [
+                            'current_players' => $lobby->current_players,
+                            'map_name' => $lobby->map_name,
+                            'game_mode' => $lobby->game_mode,
+                            'external_room_id' => $lobby->external_room_id,
+                            'status' => $lobby->status,
+                        ];
+                    } else {
+                        // Обновляем только реально переданные непустые значения.
+                        $fields = [
+                            'current_players',
+                            'map_name',
+                            'game_mode',
+                        ];
+
+                        foreach ($fields as $field) {
+                            if (
+                                array_key_exists($field, $validated) &&
+                                $validated[$field] !== null
+                            ) {
+                                $changes[$field] = $validated[$field];
+                            }
+                        }
+
+                        // Внешний ID комнаты.
+                        if (
+                            !empty($validated['room_id'])
+                        ) {
+                            $changes['external_room_id'] = $validated['room_id'];
+                        }
+
+                        // Статус комнаты.
+                        if (
+                            array_key_exists('status', $validated) &&
+                            $validated['status'] !== null
+                        ) {
+                            $changes['status'] = $validated['status'];
+                        }
+
+                        // Не разрешаем вернуть завершённую комнату
+                        // в состояние ожидания или активной игры.
+                        $terminalStatuses = ['finished', 'closed'];
+
+                        if (
+                            in_array($lobby->status, $terminalStatuses, true) &&
+                            isset($changes['status']) &&
+                            !in_array($changes['status'], $terminalStatuses, true)
+                        ) {
+                            unset($changes['status']);
+                        }
+
+                        $lobby->fill($changes);
+
+                        if ($lobby->isDirty()) {
+                            $lobby->save();
+                            $shouldNotify = true;
+                        }
+
+                        // Возвращаем только фактически изменившиеся поля.
+                        $changes = $lobby->getChanges();
+
+                        unset(
+                            $changes['updated_at'],
+                            $changes['created_at']
+                        );
                     }
+
+                    // Сохраняем историю события.
+                    RoomEvent::create([
+                        'action' => $action,
+                        'status' => $validated['status'] ?? null,
+                        'room_id' => $validated['room_id'] ?? null,
+                        'address' => $validated['address'] ?? null,
+                        'port' => $validated['port'] ?? null,
+                        'lobby_type' => $validated['lobby_type'] ?? null,
+                        'map_name' => $validated['map_name'] ?? null,
+                        'game_mode' => $validated['game_mode'] ?? null,
+                        'current_players' => $validated['current_players'] ?? null,
+                    ]);
+                });
+
+                // Транзакция прошла успешно.
+                break;
+
+            } catch (QueryException $e) {
+                /*
+                 * Если другая транзакция успела создать эту комнату,
+                 * повторяем попытку и находим существующую запись.
+                 */
+                $existingLobby = Lobby::query()
+                    ->where('game_room_code', $roomCode)
+                    ->exists();
+
+                if ($attempt === 0 && $existingLobby) {
+                    continue;
                 }
 
-                // Обновляем внешний ID комнаты.
-                if (
-                    array_key_exists('room_id', $validated) &&
-                    $validated['room_id'] !== null
-                ) {
-                    $changes['external_room_id'] = $validated['room_id'];
-                }
-
-                // Обновляем статус.
-                if (
-                    array_key_exists('status', $validated) &&
-                    $validated['status'] !== null
-                ) {
-                    $changes['status'] = $validated['status'];
-                }
-
-                // Не разрешаем возвращать завершённую комнату
-                // в состояние ожидания или активной игры.
-                $terminalStatuses = ['finished', 'closed'];
-
-                if (
-                    in_array($lobby->status, $terminalStatuses, true) &&
-                    isset($changes['status']) &&
-                    !in_array($changes['status'], $terminalStatuses, true)
-                ) {
-                    unset($changes['status']);
-                }
-
-                $lobby->fill($changes);
-
-                if ($lobby->isDirty()) {
-                    $lobby->save();
-                }
+                throw $e;
             }
+        }
 
-            // Сохраняем событие в историю.
-            RoomEvent::create([
-                'action' => $action,
-                'status' => $validated['status'] ?? null,
-                'room_id' => $validated['room_id'] ?? null,
-                'address' => $validated['address'] ?? null,
-                'port' => $validated['port'] ?? null,
-                'lobby_type' => $validated['lobby_type'] ?? null,
-                'map_name' => $validated['map_name'] ?? null,
-                'game_mode' => $validated['game_mode'] ?? null,
-                'current_players' => $validated['current_players'] ?? null,
-            ]);
-        });
-
-        // Комната не найдена.
+        // Комната не найдена, а action не равен create.
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
                 'room_code' => $roomCode,
@@ -189,9 +238,8 @@ class RoomEventController extends Controller
             ], 404);
         }
 
-        // ВАЖНО:
-        // Обновляем Telegram даже если clan_id = null.
-        if ($created || $lobby->wasChanged() || $changes !== []) {
+        // Отправляем обновление Telegram только при реальных изменениях.
+        if ($shouldNotify) {
             UpdateLobbyTelegramNotificationsJob::dispatch($lobby->id)
                 ->onQueue('telegram');
 
@@ -204,7 +252,7 @@ class RoomEventController extends Controller
         Log::info(
             $created
                 ? 'Игровое лобби создано'
-                : 'Игровые данные лобби обновлены',
+                : 'Игровые данные лобби обработаны',
             [
                 'lobby_id' => $lobby->id,
                 'room_code' => $roomCode,
