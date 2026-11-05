@@ -16,5 +16,6 @@ class RoomEvent extends Model
         'map_name',
         'game_mode',
         'current_players',
+        'tfg_player_id',
     ];
 }

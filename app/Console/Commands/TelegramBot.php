@@ -10,6 +10,8 @@ use App\Models\TelegramUser;
 use App\Models\TelegramUserMute;
 use App\Models\BotSession;
 
+use App\Services\Bot\link\PlayerLinkHandler;
+
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\AdminHandler;
 use App\Services\Bot\GlobalChatHandler;
@@ -59,6 +61,7 @@ class TelegramBot extends Command
         $kickPlayerHandler = new KickPlayerHandler();
         $globalChatHandler = new GlobalChatHandler();
         $userInfoHandler = new UserInfoHandler();
+        $playerLinkHandler = new PlayerLinkHandler();
         $topicAccessHandler = new TopicAccessHandler();
         $adminHandler = new AdminHandler();
 
@@ -303,6 +306,9 @@ class TelegramBot extends Command
 
                             continue;
                         }
+                        if ($playerLinkHandler->handle($message, $telegram)) {
+    continue;
+}
 
                         /*
                         |--------------------------------------------------------------------------

@@ -7,6 +7,7 @@ use App\Jobs\UpdateLobbyTelegramNotificationsJob;
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
 use App\Models\RoomEvent;
+use App\Models\TelegramUser;
 use Illuminate\Http\Request;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -54,6 +55,14 @@ class RoomEventController extends Controller
             'port' => ['nullable', 'string', 'max:255'],
             'lobby_type' => ['nullable', 'string', 'max:255'],
 
+            'tfg_player_id' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:128',
+                'regex:/^[a-fA-F0-9\-]+$/',
+            ],
+
             'current_players' => [
                 'sometimes',
                 'nullable',
@@ -100,6 +109,15 @@ class RoomEventController extends Controller
                     ->lockForUpdate()
                     ->get();
 
+                // Пытаемся резолвить создателя по tfg_player_id (если игрок привязал Telegram).
+                $resolvedCreatorId = null;
+
+                if (!empty($validated['tfg_player_id'])) {
+                    $resolvedCreatorId = TelegramUser::query()
+                        ->where('tfg_player_id', $validated['tfg_player_id'])
+                        ->value('id');
+                }
+
                 // Если лобби ещё нет, создаём его.
                 if ($lobbies->isEmpty()) {
                     if ($action !== 'create') {
@@ -107,7 +125,7 @@ class RoomEventController extends Controller
                     }
 
                     $lobby = Lobby::create([
-                        'creator_id' => null,
+                        'creator_id' => $resolvedCreatorId,
                         'clan_id' => null,
                         'game_room_code' => $roomCode,
                         'external_room_id' => $validated['room_id'] ?? null,
@@ -121,6 +139,7 @@ class RoomEventController extends Controller
                     $shouldNotify = true;
 
                     $changes = [
+                        'creator_id' => $lobby->creator_id,
                         'external_room_id' => $lobby->external_room_id,
                         'current_players' => $lobby->current_players,
                         'map_name' => $lobby->map_name,
@@ -179,6 +198,12 @@ class RoomEventController extends Controller
                         !in_array($updates['status'], $terminalStatuses, true)
                     ) {
                         unset($updates['status']);
+                    }
+
+                    // Бэкфилл creator_id: лобби могло быть создано до того,
+                    // как мод узнал/отправил TFGPlayerId (или до линковки в Telegram).
+                    if (empty($lobby->creator_id) && $resolvedCreatorId) {
+                        $updates['creator_id'] = $resolvedCreatorId;
                     }
 
                     $lobby->fill($updates);
@@ -311,6 +336,11 @@ class RoomEventController extends Controller
             $source->save();
 
             $target->external_room_id = $roomId;
+        }
+
+        // Если у основной записи нет creator_id, забираем из дубликата.
+        if (empty($target->creator_id) && !empty($source->creator_id)) {
+            $target->creator_id = $source->creator_id;
         }
 
         // Сохраняем более актуальный статус.
