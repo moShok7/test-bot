@@ -77,37 +77,57 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             'UTF-8'
         );
 
-        // Ссылка для входа в конкретное лобби
+        // Статус комнаты.
+        $status = strtolower(trim($lobby->status ?? 'waiting'));
+
+        $statusMap = [
+            'waiting' => '🟢 ОЖИДАНИЕ ИГРОКОВ',
+            'started' => '🔥 МАТЧ НАЧАЛСЯ',
+            'finished' => '🏁 МАТЧ ЗАВЕРШЁН',
+            'closed' => '🔴 КОМНАТА ЗАКРЫТА',
+        ];
+
+        $statusLabel = $statusMap[$status]
+            ?? '⚪ НЕИЗВЕСТНЫЙ СТАТУС';
+
+        // Ссылка на комнату.
         $gameLink = 'https://play.suspects.io/?code=' . urlencode($roomCode);
 
-        // Текст уведомления
+        // Формируем сообщение.
         $text = "🔔 <b>Лобби #{$lobby->id}{$clanLabel}</b>\n\n"
+            . "<b>{$statusLabel}</b>\n\n"
             . "🔑 Код: <code>{$safeRoomCode}</code>\n"
             . "👥 Игроки: {$players}/{$maxPlayers}\n"
             . "🗺 Карта: {$mapName}\n"
-            . "👇 <b>Для входа в игру нажми кнопку ниже:</b>";
+            . "🎮 Режим: {$gameMode}\n";
 
-        // Кнопки Telegram
-        $replyMarkup = [
-            'inline_keyboard' => [
-                [
+        // Кнопки зависят от статуса.
+        $replyMarkup = null;
+
+        if (in_array($status, ['waiting', 'started'], true)) {
+            $replyMarkup = [
+                'inline_keyboard' => [
                     [
-                        'text' => '🎮 Войти в лобби',
-                        'url' => $gameLink,
+                        [
+                            'text' => '🎮 Войти в лобби',
+                            'url' => $gameLink,
+                        ],
                     ],
-                ],
-                [
                     [
-                        'text' => '📋 Скопировать код',
-                        'copy_text' => [
-                            'text' => $roomCode,
+                        [
+                            'text' => '📋 Скопировать код',
+                            'copy_text' => [
+                                'text' => $roomCode,
+                            ],
                         ],
                     ],
                 ],
-            ],
-        ];
+            ];
 
-        // Получаем все отправленные уведомления этого лобби
+            $text .= "\n👇 <b>Для входа в игру нажми кнопку ниже:</b>";
+        }
+
+        // Получаем отправленные уведомления этого лобби.
         $notifications = LobbyNotification::query()
             ->where('lobby_id', $lobby->id)
             ->whereIn('chat_type', ['private', 'group'])
@@ -127,22 +147,30 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             }
 
             try {
-                $telegram->editMessageText([
+                $params = [
                     'chat_id' => $notification->chat_id,
                     'message_id' => $notification->telegram_message_id,
                     'text' => $text,
                     'parse_mode' => 'HTML',
-                    'reply_markup' => json_encode(
+                ];
+
+                if ($replyMarkup !== null) {
+                    $params['reply_markup'] = json_encode(
                         $replyMarkup,
                         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-                    ),
-                ]);
+                    );
+                } else {
+                    // Убираем старые кнопки после завершения или закрытия.
+                    $params['reply_markup'] = json_encode([
+                        'inline_keyboard' => [],
+                    ]);
+                }
+
+                $telegram->editMessageText($params);
 
                 $updated++;
 
             } catch (Throwable $e) {
-                // Telegram возвращает ошибку, если сообщение уже имеет такой текст.
-                // Это не считается критической ошибкой.
                 if (
                     str_contains(
                         mb_strtolower($e->getMessage()),
@@ -168,6 +196,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         Log::info('Обновление Telegram-уведомлений завершено', [
             'lobby_id' => $lobby->id,
             'room_code' => $roomCode,
+            'status' => $status,
             'updated' => $updated,
             'failed' => $failed,
             'skipped' => $skipped,

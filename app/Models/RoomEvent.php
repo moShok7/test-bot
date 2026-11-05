@@ -12,6 +12,7 @@ class RoomEvent extends Model
         'address',
         'port',
         'lobby_type',
+        'status',
         'map_name',
         'game_mode',
         'current_players',

@@ -13,7 +13,7 @@ class RoomEventController extends Controller
 {
     public function store(Request $request)
     {
-        // Проверяем отдельный секрет мода.
+        // Проверяем секрет мода.
         $token = $request->header('X-Auth-Token');
         $expectedToken = config('services.room_api.token');
 
@@ -32,7 +32,13 @@ class RoomEventController extends Controller
         $validated = $request->validate([
             'action' => ['nullable', 'string', 'max:30'],
 
-            // Короткий код комнаты из 6 символов.
+            'status' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'in:waiting,started,finished,closed',
+            ],
+
             'room_code' => [
                 'required',
                 'string',
@@ -40,9 +46,7 @@ class RoomEventController extends Controller
                 'regex:/^[A-Za-z0-9]{6}$/',
             ],
 
-            // Внутренний ID игрового сервера.
             'room_id' => ['nullable', 'string', 'max:255'],
-
             'address' => ['nullable', 'string', 'max:255'],
             'port' => ['nullable', 'string', 'max:255'],
             'lobby_type' => ['nullable', 'string', 'max:255'],
@@ -61,20 +65,7 @@ class RoomEventController extends Controller
 
         $roomCode = strtoupper($validated['room_code']);
 
-        // Сохраняем событие в историю.
-        RoomEvent::create([
-            'action' => $validated['action'] ?? null,
-            'room_id' => $validated['room_id'] ?? null,
-            'address' => $validated['address'] ?? null,
-            'port' => $validated['port'] ?? null,
-            'lobby_type' => $validated['lobby_type'] ?? null,
-            'map_name' => $validated['map_name'] ?? null,
-            'game_mode' => $validated['game_mode'] ?? null,
-            'current_players' => $validated['current_players'] ?? null,
-        ]);
-
-        // Ищем лобби именно по короткому коду.
-        // В таблице lobbies он хранится в game_room_code.
+        // Ищем лобби по коду комнаты.
         $lobby = Lobby::query()
             ->where('game_room_code', $roomCode)
             ->first();
@@ -84,6 +75,7 @@ class RoomEventController extends Controller
                 'room_code' => $roomCode,
                 'room_id' => $validated['room_id'] ?? null,
                 'action' => $validated['action'] ?? null,
+                'status' => $validated['status'] ?? null,
             ]);
 
             return response()->json([
@@ -93,15 +85,20 @@ class RoomEventController extends Controller
             ], 404);
         }
 
-        // Не обновляем закрытые лобби.
-        if (!in_array($lobby->status, ['waiting', 'playing'], true)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Lobby is not active',
-            ], 409);
-        }
+        // Сохраняем событие в историю.
+        RoomEvent::create([
+            'action' => $validated['action'] ?? null,
+            'status' => $validated['status'] ?? null,
+            'room_id' => $validated['room_id'] ?? null,
+            'address' => $validated['address'] ?? null,
+            'port' => $validated['port'] ?? null,
+            'lobby_type' => $validated['lobby_type'] ?? null,
+            'map_name' => $validated['map_name'] ?? null,
+            'game_mode' => $validated['game_mode'] ?? null,
+            'current_players' => $validated['current_players'] ?? null,
+        ]);
 
-        // Обновляем только переданные игровые данные.
+        // Обновляем только реально переданные поля.
         $fields = [
             'current_players',
             'map_name',
@@ -116,6 +113,11 @@ class RoomEventController extends Controller
             }
         }
 
+        // Обновляем статус лобби.
+        if (array_key_exists('status', $validated) && $validated['status'] !== null) {
+            $changes['status'] = $validated['status'];
+        }
+
         if ($changes === []) {
             return response()->json([
                 'success' => true,
@@ -123,6 +125,18 @@ class RoomEventController extends Controller
                 'lobby_id' => $lobby->id,
                 'room_code' => $roomCode,
             ]);
+        }
+
+        // Не разрешаем возвращать закрытую комнату в активное состояние
+        // случайным запоздавшим событием.
+        $terminalStatuses = ['finished', 'closed'];
+
+        if (
+            in_array($lobby->status, $terminalStatuses, true) &&
+            isset($changes['status']) &&
+            !in_array($changes['status'], $terminalStatuses, true)
+        ) {
+            unset($changes['status']);
         }
 
         $lobby->fill($changes);
@@ -138,7 +152,7 @@ class RoomEventController extends Controller
 
         $lobby->save();
 
-        // Обновляем уже отправленные сообщения Telegram.
+        // Обновляем сообщения Telegram.
         UpdateLobbyTelegramNotificationsJob::dispatch($lobby->id)
             ->onQueue('telegram');
 
