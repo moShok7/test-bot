@@ -14,7 +14,7 @@ class RoomEventController extends Controller
 {
     public function store(Request $request)
     {
-        // Проверяем секрет мода.
+        // Проверяем секретный токен мода.
         $token = $request->header('X-Auth-Token');
         $expectedToken = config('services.room_api.token');
 
@@ -79,14 +79,13 @@ class RoomEventController extends Controller
             &$created,
             &$changes
         ) {
-            // Ищем существующее лобби.
+            // Ищем существующую комнату.
             $lobby = Lobby::query()
                 ->where('game_room_code', $roomCode)
                 ->lockForUpdate()
                 ->first();
 
-            // Если лобби отсутствует, разрешаем создать его
-            // только при получении события create.
+            // Если комнаты нет, создаём её только при action=create.
             if (!$lobby) {
                 if ($action !== 'create') {
                     return;
@@ -104,8 +103,16 @@ class RoomEventController extends Controller
                 ]);
 
                 $created = true;
+
+                $changes = [
+                    'current_players' => $lobby->current_players,
+                    'map_name' => $lobby->map_name,
+                    'game_mode' => $lobby->game_mode,
+                    'external_room_id' => $lobby->external_room_id,
+                    'status' => $lobby->status,
+                ];
             } else {
-                // Обновляем только реально переданные поля.
+                // Обновляем только переданные поля.
                 $fields = [
                     'current_players',
                     'map_name',
@@ -118,7 +125,7 @@ class RoomEventController extends Controller
                     }
                 }
 
-                // Сохраняем внешний ID игровой комнаты.
+                // Обновляем внешний ID комнаты.
                 if (
                     array_key_exists('room_id', $validated) &&
                     $validated['room_id'] !== null
@@ -134,8 +141,8 @@ class RoomEventController extends Controller
                     $changes['status'] = $validated['status'];
                 }
 
-                // Не разрешаем запоздавшим событиям
-                // возвращать завершённую комнату в активное состояние.
+                // Не разрешаем возвращать завершённую комнату
+                // в состояние ожидания или активной игры.
                 $terminalStatuses = ['finished', 'closed'];
 
                 if (
@@ -167,7 +174,7 @@ class RoomEventController extends Controller
             ]);
         });
 
-        // Если лобби не найдено и событие не create.
+        // Комната не найдена.
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
                 'room_code' => $roomCode,
@@ -182,10 +189,16 @@ class RoomEventController extends Controller
             ], 404);
         }
 
-        // Обновляем Telegram только для лобби с привязанным кланом.
-        if ($lobby->clan_id !== null && ($created || $lobby->wasChanged() || $changes !== [])) {
+        // ВАЖНО:
+        // Обновляем Telegram даже если clan_id = null.
+        if ($created || $lobby->wasChanged() || $changes !== []) {
             UpdateLobbyTelegramNotificationsJob::dispatch($lobby->id)
                 ->onQueue('telegram');
+
+            Log::info('Задача обновления Telegram поставлена в очередь', [
+                'lobby_id' => $lobby->id,
+                'room_code' => $roomCode,
+            ]);
         }
 
         Log::info(

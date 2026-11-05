@@ -98,7 +98,8 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             . "<b>{$statusLabel}</b>\n\n"
             . "🔑 Код: <code>{$safeRoomCode}</code>\n"
             . "👥 Игроки: {$players}/{$maxPlayers}\n"
-            . "🗺 Карта: {$mapName}\n".
+            . "🗺 Карта: {$mapName}\n"
+            . "🎮 Режим: {$gameMode}\n";
 
         // Кнопки зависят от статуса.
         $replyMarkup = null;
@@ -126,7 +127,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             $text .= "\n👇 <b>Для входа в игру нажми кнопку ниже:</b>";
         }
 
-        // Получаем отправленные уведомления этого лобби.
+        // Получаем существующие уведомления.
         $notifications = LobbyNotification::query()
             ->where('lobby_id', $lobby->id)
             ->whereIn('chat_type', ['private', 'group'])
@@ -159,7 +160,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
                         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
                     );
                 } else {
-                    // Убираем старые кнопки после завершения или закрытия.
+                    // Убираем старые кнопки после завершения комнаты.
                     $params['reply_markup'] = json_encode([
                         'inline_keyboard' => [],
                     ]);
@@ -196,6 +197,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             'lobby_id' => $lobby->id,
             'room_code' => $roomCode,
             'status' => $status,
+            'notifications_found' => $notifications->count(),
             'updated' => $updated,
             'failed' => $failed,
             'skipped' => $skipped,
