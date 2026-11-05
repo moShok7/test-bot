@@ -36,7 +36,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
     public function handle(Api $telegram): void
     {
-        $lobby = Lobby::with('clan')->find($this->lobbyId);
+        $lobby = Lobby::with(['clan', 'creator'])->find($this->lobbyId);
 
         if (!$lobby) {
             Log::warning('Лобби для обновления Telegram не найдено', [
@@ -48,8 +48,8 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
         $roomCode = strtoupper(trim($lobby->game_room_code ?? ''));
 
-        $players = $lobby->current_players ?? 0;
-        $maxPlayers = $lobby->max_players ?? '?';
+        $players = (int) ($lobby->current_players ?? 0);
+        $maxPlayers = (int) ($lobby->max_players ?? 12);
 
         // Экранирование текста для HTML Telegram.
         $escape = static function ($value): string {
@@ -62,14 +62,28 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
         $safeRoomCode = $escape($roomCode);
 
+        // Название клана.
         $clanLabel = '';
 
         if ($lobby->clan) {
             $clanLabel = ' [' . $escape($lobby->clan->name) . ']';
         }
 
+        // Хост лобби.
+        $hostName = 'Неизвестно';
+
+        if ($lobby->creator) {
+            if (!empty($lobby->creator->username)) {
+                $hostName = '@' . $lobby->creator->username;
+            } elseif (!empty($lobby->creator->first_name)) {
+                $hostName = $lobby->creator->first_name;
+            }
+        }
+
+        $hostName = $escape($hostName);
+
+        // Карта.
         $mapName = $escape($lobby->map_name ?: 'Неизвестно');
-        $gameMode = $escape($lobby->game_mode ?: 'Неизвестно');
 
         // Статус комнаты.
         $status = strtolower(trim($lobby->status ?? 'waiting'));
@@ -88,12 +102,13 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         $gameLink = 'https://play.suspects.io/?code=' . urlencode($roomCode);
 
         // Формируем текст сообщения.
+        // Игроки выделены отдельно, чтобы не смешиваться со статусом.
         $text = "🔔 <b>Лобби #{$lobby->id}{$clanLabel}</b>\n\n"
             . "<b>{$statusLabel}</b>\n\n"
-            . "🔑 Код: <code>{$safeRoomCode}</code>\n"
-            . "👥 Игроки: {$players}/{$maxPlayers}\n"
-            . "🗺 Карта: {$mapName}\n"
-            . "🎮 Режим: {$gameMode}\n";
+            . "👤 Хост: <b>{$hostName}</b>\n"
+            . "🔑 Код: <code>{$safeRoomCode}</code>\n\n"
+            . "👥 <b>ИГРОКИ: {$players}/{$maxPlayers}</b>\n\n"
+            . "🗺 Карта: {$mapName}\n";
 
         // Кнопки доступны, пока комната активна.
         $replyMarkup = null;
