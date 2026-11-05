@@ -98,8 +98,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             . "<b>{$statusLabel}</b>\n\n"
             . "🔑 Код: <code>{$safeRoomCode}</code>\n"
             . "👥 Игроки: {$players}/{$maxPlayers}\n"
-            . "🗺 Карта: {$mapName}\n"
-            . "🎮 Режим: {$gameMode}\n";
+            . "🗺 Карта: {$mapName}\n".
 
         // Кнопки зависят от статуса.
         $replyMarkup = null;
