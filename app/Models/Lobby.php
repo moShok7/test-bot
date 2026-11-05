@@ -12,6 +12,7 @@ class Lobby extends Model
         'game_room_code',
         'status',
         'started_at',
+        'external_room_id',
         'min_players',
         'max_players',
         'current_players',
