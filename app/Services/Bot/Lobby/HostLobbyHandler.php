@@ -104,17 +104,17 @@ class HostLobbyHandler
 
             // Удалять обычное лобби разрешаем только создателю,
             // пока оно ожидает игроков.
-            if ($isHost && $lobby->status === 'waiting') {
+                        if ($isHost && $lobby->status === 'waiting') {
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
                     'text' => 'Управление обычным лобби:',
                     'reply_markup' => json_encode([
-                        'inline_keyboard' => [[
-                            [
-                                'text' => '❌ Удалить лобби',
-                                'callback_data' => 'host_delete_lobby_' . $lobby->id,
-                            ],
-                        ]],
+                        'keyboard' => [
+                            [['text' => '❌ Удалить лобби']],
+                            [['text' => '🎮 Моё лобби']],
+                            [['text' => '⬅️ Главное меню']],
+                        ],
+                        'resize_keyboard' => true,
                     ], JSON_UNESCAPED_UNICODE),
                 ]);
             }
