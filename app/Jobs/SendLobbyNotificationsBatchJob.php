@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Lobby;
 use App\Models\LobbyNotification;
+use App\Models\LobbyPlayer;
 use App\Models\TelegramUser;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -36,7 +37,7 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
      */
     public function __construct(
         public int $lobbyId,
-        public int $creatorTelegramId,
+        public ?int $creatorTelegramId,
         public string $creatorName,
         public array $telegramUserIds,
     ) {
@@ -54,21 +55,28 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         ) {
             Log::info('Личное уведомление пропущено: лобби недоступно', [
                 'lobby_id' => $this->lobbyId,
+                'status' => $lobby?->status,
             ]);
 
             return;
         }
 
-        $gameLink = 'https://play.suspects.io/?code='
-            . rawurlencode($lobby->game_room_code);
-
-        $creatorLink = 'tg://user?id=' . $this->creatorTelegramId;
-
         $creatorName = htmlspecialchars(
-            $this->creatorName,
+            $this->creatorName ?: 'Игрок',
             ENT_QUOTES | ENT_SUBSTITUTE,
             'UTF-8'
         );
+
+        $creatorLink = $this->creatorTelegramId
+            ? 'tg://user?id=' . $this->creatorTelegramId
+            : null;
+
+        $creatorLine = $creatorLink
+            ? "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n"
+            : "👑 Создал: <b>{$creatorName}</b>\n";
+
+        $gameLink = 'https://play.suspects.io/?code='
+            . rawurlencode($lobby->game_room_code);
 
         $roomCode = htmlspecialchars(
             $lobby->game_room_code,
@@ -86,7 +94,7 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
 
         $text = "🔔 Новое лобби!\n\n"
             . "🎮 Лобби #{$lobby->id}{$clanLabel}\n"
-            . "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n"
+            . $creatorLine
             . "🔑 Код: {$roomCode}\n\n"
             . '👇 Вход в игру:';
 
@@ -109,23 +117,33 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
             ],
         ];
 
-        $userIds = array_values(array_unique(array_map(
-            'intval',
-            $this->telegramUserIds
+        $userIds = array_values(array_unique(array_filter(
+            array_map('intval', $this->telegramUserIds),
+            fn ($id) => $id > 0
         )));
 
-        $users = TelegramUser::query()
+        $userQuery = TelegramUser::query()
             ->whereIn('id', $userIds)
-            ->where('telegram_id', '!=', $this->creatorTelegramId)
-            ->get();
+            ->whereNotNull('telegram_id')
+            ->where('telegram_id', '>', 0);
+
+        if ($this->creatorTelegramId) {
+            $userQuery->where(
+                'telegram_id',
+                '!=',
+                $this->creatorTelegramId
+            );
+        }
+
+        $users = $userQuery->get();
 
         $sent = 0;
         $skipped = 0;
         $failed = 0;
 
         foreach ($users as $user) {
-            // Не отправляем уведомление пользователю, который уже играет.
-            $isActive = \App\Models\LobbyPlayer::query()
+            // Проверяем, не играет ли пользователь в другом активном лобби.
+            $isActive = LobbyPlayer::query()
                 ->where('telegram_user_id', $user->id)
                 ->whereHas('lobby', function ($query) {
                     $query->whereIn('status', ['waiting', 'playing']);
@@ -137,7 +155,7 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
                 continue;
             }
 
-            // Защита от повторной отправки в рамках обычных повторов Job.
+            // Проверка уже отправленного уведомления.
             $alreadySent = LobbyNotification::query()
                 ->where('lobby_id', $lobby->id)
                 ->where('telegram_user_id', $user->id)
@@ -162,6 +180,12 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
 
                 $messageId = $response->getMessageId();
 
+                if (!$messageId) {
+                    throw new \RuntimeException(
+                        'Telegram не вернул ID сообщения'
+                    );
+                }
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => $user->id,
@@ -172,6 +196,8 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
 
                 $sent++;
 
+                // Закрепление необязательно. Ошибка закрепления
+                // не влияет на успешную отправку сообщения.
                 try {
                     $telegram->pinChatMessage([
                         'chat_id' => $user->telegram_id,
@@ -189,8 +215,10 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
             } catch (Throwable $e) {
                 $failed++;
 
+                // Ошибка одного пользователя не прерывает пакет.
                 Log::warning('Не удалось отправить личное уведомление', [
                     'lobby_id' => $lobby->id,
+                    'telegram_user_id' => $user->id,
                     'telegram_id' => $user->telegram_id,
                     'error' => $e->getMessage(),
                 ]);
@@ -200,6 +228,7 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         Log::info('Пакет личных уведомлений обработан', [
             'lobby_id' => $lobby->id,
             'users_in_batch' => count($userIds),
+            'users_found' => $users->count(),
             'sent' => $sent,
             'skipped' => $skipped,
             'failed' => $failed,

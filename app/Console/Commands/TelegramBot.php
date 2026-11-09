@@ -26,6 +26,7 @@ use App\Services\Bot\Lobby\PremierLobbyHandler;
 use App\Services\Bot\Lobby\PremierLobbyApplicationHandler;
 use App\Services\Bot\Lobby\SearchLobbyHandler;
 use App\Services\Bot\Lobby\JoinLobbyHandler;
+use App\Services\Bot\Lobby\HostLobbyHandler;
 
 use App\Services\Bot\Clan\ClanHandler;
 use App\Services\Bot\Clan\ClanModerationService;
@@ -35,12 +36,6 @@ class TelegramBot extends Command
     protected $signature = 'telegram:bot';
 
     protected $description = 'Telegram bot';
-
-    /*
-    |--------------------------------------------------------------------------
-    | MUTE CONFIGURATION
-    |--------------------------------------------------------------------------
-    */
 
     private const MUTE_CHAT_ID = -1004344778682;
     private const MUTE_OWNER_ID = 6537808029;
@@ -59,6 +54,8 @@ class TelegramBot extends Command
         $searchLobbyHandler = new SearchLobbyHandler();
         $joinLobbyHandler = new JoinLobbyHandler();
         $kickPlayerHandler = new KickPlayerHandler();
+        $hostLobbyHandler = new HostLobbyHandler();
+
         $globalChatHandler = new GlobalChatHandler();
         $userInfoHandler = new UserInfoHandler();
         $playerLinkHandler = new PlayerLinkHandler();
@@ -95,12 +92,14 @@ class TelegramBot extends Command
                             $callback = $update->callbackQuery;
                             $callbackData = (string) ($callback->data ?? '');
 
+                            // CLANS
                             if (str_starts_with($callbackData, 'clan_')) {
                                 if ($clanHandler->handleCallback($callback, $telegram)) {
                                     continue;
                                 }
                             }
 
+                            // KICK PLAYER
                             if (str_starts_with($callbackData, 'kick_player_')) {
                                 $kickPlayerHandler->handle(
                                     (object) [
@@ -112,6 +111,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // JOIN LOBBY
                             if (str_starts_with($callbackData, 'join_lobby_')) {
                                 $message = $callback->message;
 
@@ -132,6 +132,17 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // HOST LOBBY: DELETE / CONFIRM / CANCEL
+                            if (
+                                $hostLobbyHandler->handleCallback(
+                                    $callback,
+                                    $telegram
+                                )
+                            ) {
+                                continue;
+                            }
+
+                            // PREMIER LOBBY APPLICATIONS
                             if (
                                 $premierApplicationHandler->handleCallback(
                                     $callback,
@@ -141,6 +152,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // ADMIN
                             $adminHandler->handleCallback($callback, $telegram);
 
                             continue;
@@ -306,9 +318,16 @@ class TelegramBot extends Command
 
                             continue;
                         }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | PLAYER LINK
+                        |--------------------------------------------------------------------------
+                        */
+
                         if ($playerLinkHandler->handle($message, $telegram)) {
-    continue;
-}
+                            continue;
+                        }
 
                         /*
                         |--------------------------------------------------------------------------
@@ -357,6 +376,16 @@ class TelegramBot extends Command
                                 '🎮 Игровое меню'
                             );
 
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | HOST LOBBY
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($hostLobbyHandler->handle($message, $telegram)) {
                             continue;
                         }
 
@@ -477,9 +506,7 @@ class TelegramBot extends Command
             ?? $message->reply_to_message
             ?? null;
 
-        $replyUserId = (int) (
-            data_get($reply, 'from.id', 0)
-        );
+        $replyUserId = (int) data_get($reply, 'from.id', 0);
 
         $isMuteCommand = preg_match(
             '/^(?:мут\s+\d+\s+(?:минут(?:у|ы|а|ой)?|час(?:а|ов)?|д(?:ень|ня|ней))|снять\s+мут|размутить)[!.]?$/u',
@@ -489,13 +516,13 @@ class TelegramBot extends Command
         /*
          * Команды принимаются только ответом на сообщение владельца.
          */
+
         if ($isMuteCommand && $reply && $replyUserId === self::MUTE_OWNER_ID) {
             try {
                 if ($userId === 0 || $userId === self::MUTE_OWNER_ID) {
                     return true;
                 }
 
-                // Проверяем статус автора команды в этой группе.
                 $member = $telegram->getChatMember([
                     'chat_id' => self::MUTE_CHAT_ID,
                     'user_id' => $userId,
@@ -517,7 +544,6 @@ class TelegramBot extends Command
                     ->where('chat_id', self::MUTE_CHAT_ID)
                     ->where('user_id', self::MUTE_OWNER_ID);
 
-                // Снять мут.
                 if (preg_match('/^(?:снять\s+мут|размутить)[!.]?$/u', $text)) {
                     $muteQuery->delete();
 
@@ -575,6 +601,7 @@ class TelegramBot extends Command
                 ]);
 
                 return true;
+
             } catch (\Throwable $e) {
                 Log::error('Telegram mute command failed', [
                     'chat_id' => $chatId,
@@ -598,6 +625,7 @@ class TelegramBot extends Command
         /*
          * Удаляем новые сообщения владельца, пока мут действует.
          */
+
         if ($userId !== self::MUTE_OWNER_ID) {
             return false;
         }
@@ -627,7 +655,6 @@ class TelegramBot extends Command
             ]);
         }
 
-        // Не передаём сообщения владельца другим обработчикам.
         return true;
     }
 

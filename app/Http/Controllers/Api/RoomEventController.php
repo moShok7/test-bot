@@ -19,6 +19,9 @@ class RoomEventController extends Controller
 {
     public function store(Request $request)
     {
+        // Всегда возвращаем JSON при ошибках валидации.
+        $request->headers->set('Accept', 'application/json');
+
         // Проверка секретного токена мода.
         $token = $request->header('X-Auth-Token');
         $expectedToken = config('services.room_api.token');
@@ -86,10 +89,7 @@ class RoomEventController extends Controller
         $shouldNotify = false;
         $changes = [];
 
-        // Заполняются внутри транзакции, если у лобби появился создатель
-        // (при создании или бэкфиллом) и ему ещё не отправляли первую рассылку.
         $resolvedCreator = null;
-        $creatorJustResolved = false;
 
         try {
             DB::transaction(function () use (
@@ -101,11 +101,10 @@ class RoomEventController extends Controller
                 &$merged,
                 &$shouldNotify,
                 &$changes,
-                &$resolvedCreator,
-                &$creatorJustResolved
+                &$resolvedCreator
             ) {
                 /*
-                 * Получаем ВСЕ записи с таким коротким кодом.
+                 * Получаем все записи с таким коротким кодом.
                  * Основная запись выбирается с приоритетом:
                  * 1. creator_id заполнен.
                  * 2. external_room_id заполнен.
@@ -118,16 +117,22 @@ class RoomEventController extends Controller
                     ->lockForUpdate()
                     ->get();
 
-                // Пытаемся резолвить создателя по tfg_player_id (если игрок привязал Telegram).
+                // Пытаемся найти создателя по TFG Player ID.
                 if (!empty($validated['tfg_player_id'])) {
                     $resolvedCreator = TelegramUser::query()
-                        ->where('tfg_player_id', $validated['tfg_player_id'])
+                        ->where(
+                            'tfg_player_id',
+                            $validated['tfg_player_id']
+                        )
                         ->first();
                 }
 
                 $resolvedCreatorId = $resolvedCreator?->id;
 
-                // Если лобби ещё нет, создаём его.
+                // -------------------------------------------------
+                // Создание нового лобби.
+                // -------------------------------------------------
+
                 if ($lobbies->isEmpty()) {
                     if ($action !== 'create') {
                         return;
@@ -147,10 +152,6 @@ class RoomEventController extends Controller
                     $created = true;
                     $shouldNotify = true;
 
-                    if ($resolvedCreatorId) {
-                        $creatorJustResolved = true;
-                    }
-
                     $changes = [
                         'creator_id' => $lobby->creator_id,
                         'external_room_id' => $lobby->external_room_id,
@@ -163,7 +164,7 @@ class RoomEventController extends Controller
                     // Первая запись после сортировки становится основной.
                     $lobby = $lobbies->first();
 
-                    // Объединяем все остальные записи.
+                    // Объединяем остальные записи с таким же кодом.
                     foreach ($lobbies->skip(1) as $duplicate) {
                         $this->mergeDuplicateLobby($lobby, $duplicate);
 
@@ -208,16 +209,21 @@ class RoomEventController extends Controller
                     if (
                         in_array($lobby->status, $terminalStatuses, true) &&
                         isset($updates['status']) &&
-                        !in_array($updates['status'], $terminalStatuses, true)
+                        !in_array(
+                            $updates['status'],
+                            $terminalStatuses,
+                            true
+                        )
                     ) {
                         unset($updates['status']);
                     }
 
-                    // Бэкфилл creator_id: лобби могло быть создано до того,
-                    // как мод узнал/отправил TFGPlayerId (или до линковки в Telegram).
-                    if (empty($lobby->creator_id) && $resolvedCreatorId) {
+                    // Если создатель ещё не определён, пробуем заполнить creator_id.
+                    if (
+                        empty($lobby->creator_id) &&
+                        $resolvedCreatorId
+                    ) {
                         $updates['creator_id'] = $resolvedCreatorId;
-                        $creatorJustResolved = true;
                     }
 
                     $lobby->fill($updates);
@@ -235,8 +241,8 @@ class RoomEventController extends Controller
                     }
                 }
 
-                // Если создатель только что определился — добавляем его как игрока лобби.
-                if ($creatorJustResolved && $resolvedCreatorId) {
+                // Если создатель определился, добавляем его в игроков лобби.
+                if ($resolvedCreatorId && $lobby) {
                     LobbyPlayer::firstOrCreate([
                         'lobby_id' => $lobby->id,
                         'telegram_user_id' => $resolvedCreatorId,
@@ -282,25 +288,44 @@ class RoomEventController extends Controller
             ], 404);
         }
 
-        /*
-         * Если создатель только что определился (при создании или бэкфиллом) и
-         * первая рассылка по этому лобби ещё не запускалась — запускаем её,
-         * как это делает CreateLobbyHandler для лобби, созданных через бота.
-         * Иначе — обычный Update-джоб, который редактирует уже отправленные сообщения.
-         */
+        // -------------------------------------------------
+        // Определяем создателя.
+        // -------------------------------------------------
+
+        if (!$resolvedCreator && $lobby->creator_id) {
+            $resolvedCreator = TelegramUser::find($lobby->creator_id);
+        }
+
+        $creatorTelegramId = $resolvedCreator?->telegram_id
+            ? (int) $resolvedCreator->telegram_id
+            : null;
+
+        $creatorName = $resolvedCreator?->username
+            ? '@' . $resolvedCreator->username
+            : ($resolvedCreator?->first_name ?: 'Игрок');
+
+        // -------------------------------------------------
+        // Первоначальная рассылка или обновление сообщений.
+        // -------------------------------------------------
+
         $initialNotificationSent = false;
 
-        if ($creatorJustResolved && $resolvedCreator) {
-            $alreadyNotified = LobbyNotification::where('lobby_id', $lobby->id)->exists();
+        if ($lobby->status === 'waiting') {
+            $alreadyHasNotifications = LobbyNotification::query()
+                ->where('lobby_id', $lobby->id)
+                ->exists();
 
-            if (!$alreadyNotified) {
-                $creatorName = $resolvedCreator->username
-                    ? '@' . $resolvedCreator->username
-                    : ($resolvedCreator->first_name ?: 'Игрок');
-
+            /*
+             * Если сообщений ещё нет, запускаем первоначальную рассылку.
+             * Это работает и тогда, когда создатель неизвестен.
+             *
+             * ShouldBeUnique в SendLobbyNotificationsJob защищает
+             * от параллельных запусков для одного лобби.
+             */
+            if (!$alreadyHasNotifications) {
                 SendLobbyNotificationsJob::dispatch(
                     lobbyId: (int) $lobby->id,
-                    creatorTelegramId: (int) $resolvedCreator->telegram_id,
+                    creatorTelegramId: $creatorTelegramId,
                     creatorName: (string) $creatorName,
                     count: 100,
                 )->onQueue('telegram');
@@ -309,9 +334,20 @@ class RoomEventController extends Controller
             }
         }
 
-        if ($shouldNotify && !$initialNotificationSent) {
-            UpdateLobbyTelegramNotificationsJob::dispatch($lobby->id)
-                ->onQueue('telegram');
+        /*
+         * Если уведомления уже существуют и данные изменились,
+         * обновляем существующие сообщения.
+         */
+        if (
+            $shouldNotify &&
+            !$initialNotificationSent &&
+            LobbyNotification::query()
+                ->where('lobby_id', $lobby->id)
+                ->exists()
+        ) {
+            UpdateLobbyTelegramNotificationsJob::dispatch(
+                $lobby->id
+            )->onQueue('telegram');
         }
 
         Log::info('Игровое лобби обработано', [
@@ -320,6 +356,7 @@ class RoomEventController extends Controller
             'created' => $created,
             'merged_duplicates' => $merged,
             'creator_id' => $lobby->creator_id,
+            'creator_telegram_id' => $creatorTelegramId,
             'external_room_id' => $lobby->external_room_id,
             'initial_notification_sent' => $initialNotificationSent,
             'changes' => $changes,
@@ -369,13 +406,7 @@ class RoomEventController extends Controller
             }
         }
 
-        /*
-         * Если у основной записи нет external_room_id,
-         * забираем его из дубликата.
-         *
-         * Сначала освобождаем ID в исходной записи,
-         * если в БД на него установлен уникальный индекс.
-         */
+        // Переносим внешний ID, если у основной записи его нет.
         if (
             empty($target->external_room_id) &&
             !empty($source->external_room_id)
@@ -388,7 +419,7 @@ class RoomEventController extends Controller
             $target->external_room_id = $roomId;
         }
 
-        // Если у основной записи нет creator_id, забираем из дубликата.
+        // Переносим creator_id, если он отсутствует.
         if (empty($target->creator_id) && !empty($source->creator_id)) {
             $target->creator_id = $source->creator_id;
         }
@@ -407,6 +438,21 @@ class RoomEventController extends Controller
         }
 
         $target->save();
+
+        // Переносим список игроков дубликата.
+        LobbyPlayer::query()
+            ->where('lobby_id', $sourceId)
+            ->get()
+            ->each(function ($player) use ($target, $sourceId) {
+                LobbyPlayer::firstOrCreate([
+                    'lobby_id' => $target->id,
+                    'telegram_user_id' => $player->telegram_user_id,
+                ]);
+            });
+
+        LobbyPlayer::query()
+            ->where('lobby_id', $sourceId)
+            ->delete();
 
         // Переносим Telegram-сообщения на основную запись.
         LobbyNotification::query()
