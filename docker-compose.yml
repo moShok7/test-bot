@@ -85,18 +85,20 @@ services:
       - sus_lobby_network
 
   telegram_bot:
-    build:
-      context: .
-      dockerfile: docker/php/Dockerfile
-    container_name: sus_lobby_bot
-    command: php artisan telegram:bot
-    volumes:
-      - ./:/var/www
-    depends_on:
-      - mysql
-    restart: unless-stopped
-    networks:
-      - sus_lobby_network
+      build:
+        context: .
+        dockerfile: docker/php/Dockerfile
+      container_name: sus_lobby_bot
+      command: php artisan telegram:bot
+      volumes:
+        - ./:/var/www
+      env_file:
+        - .env
+      depends_on:
+        - mysql
+      restart: unless-stopped
+      networks:
+        - sus_lobby_network
 
   # ============================================================
   # TELEGRAM WORKER 1
