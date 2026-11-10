@@ -1,15 +1,16 @@
+
 <?php
 
 namespace App\Services\Bot\Send;
 
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
+use Telegram\Bot\FileUpload\InputFile;
 
 class SendHandler
 {
     /**
-     * Файлы инструкции.
-     *
+     * Файлы инструкции:
      * storage/app/public/send/
      */
     private const FILES_PATH = 'app/public/send';
@@ -18,7 +19,7 @@ class SendHandler
     {
         $text = trim((string) ($message->text ?? ''));
 
-        // Только команда /send
+        // Обрабатываем только /send и /send@BotName
         if (!preg_match('/^\/send(?:@\w+)?$/i', $text)) {
             return false;
         }
@@ -34,25 +35,26 @@ class SendHandler
 
             $melonZip = $basePath . '/MelonLoader.zip';
             $modDll = $basePath . '/MyMod.dll';
-
             $image1 = $basePath . '/step1.jpg';
             $image2 = $basePath . '/step2.jpg';
 
-            // Проверяем наличие файлов
-            foreach ([
+            // Проверяем наличие всех файлов
+            $files = [
                 $melonZip,
                 $modDll,
                 $image1,
                 $image2,
-            ] as $file) {
-                if (!file_exists($file)) {
-                    Log::warning('SendHandler: file not found', [
+            ];
+
+            foreach ($files as $file) {
+                if (!is_file($file) || !is_readable($file)) {
+                    Log::error('SendHandler: file missing or unreadable', [
                         'file' => $file,
                     ]);
 
                     $telegram->sendMessage([
                         'chat_id' => $chatId,
-                        'text' => '❌ Не найден файл инструкции: '
+                        'text' => '❌ Файл не найден или недоступен: '
                             . basename($file),
                     ]);
 
@@ -60,7 +62,11 @@ class SendHandler
                 }
             }
 
-            // Заголовок
+            Log::info('SendHandler: starting instruction', [
+                'chat_id' => $chatId,
+            ]);
+
+            // ЗАГОЛОВОК
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
@@ -82,15 +88,27 @@ class SendHandler
                     . "⚠️ Не создавай дополнительную вложенную папку.",
             ]);
 
+            // Отправляем MelonLoader.zip
+            Log::info('SendHandler: sending MelonLoader.zip');
+
             $telegram->sendDocument([
                 'chat_id' => $chatId,
-                'document' => $melonZip,
+                'document' => InputFile::create(
+                    $melonZip,
+                    'MelonLoader.zip'
+                ),
                 'caption' => '⬇️ MelonLoader.zip',
             ]);
 
+            // Отправляем первую фотографию
+            Log::info('SendHandler: sending step1.jpg');
+
             $telegram->sendPhoto([
                 'chat_id' => $chatId,
-                'photo' => $image1,
+                'photo' => InputFile::create(
+                    $image1,
+                    'step1.jpg'
+                ),
                 'caption' =>
                     '📸 Пример расположения файлов MelonLoader.',
             ]);
@@ -106,15 +124,27 @@ class SendHandler
                     . "4. Перемести DLL-файл внутрь папки Mods.",
             ]);
 
+            // Отправляем DLL
+            Log::info('SendHandler: sending MyMod.dll');
+
             $telegram->sendDocument([
                 'chat_id' => $chatId,
-                'document' => $modDll,
+                'document' => InputFile::create(
+                    $modDll,
+                    'MyMod.dll'
+                ),
                 'caption' => '⬇️ MyMod.dll',
             ]);
 
+            // Отправляем вторую фотографию
+            Log::info('SendHandler: sending step2.jpg');
+
             $telegram->sendPhoto([
                 'chat_id' => $chatId,
-                'photo' => $image2,
+                'photo' => InputFile::create(
+                    $image2,
+                    'step2.jpg'
+                ),
                 'caption' =>
                     '📸 Сюда необходимо поместить DLL-файл.',
             ]);
@@ -128,20 +158,29 @@ class SendHandler
                     . "Если возникли проблемы, обратись к администрации.",
             ]);
 
+            Log::info('SendHandler: instruction sent successfully', [
+                'chat_id' => $chatId,
+            ]);
+
         } catch (\Throwable $e) {
             Log::error('SendHandler error', [
                 'error' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
+                'chat_id' => $chatId,
             ]);
 
             try {
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
-                    'text' => '❌ Не удалось отправить инструкцию. Попробуй позже.',
+                    'text' =>
+                        '❌ Не удалось отправить инструкцию. '
+                        . 'Попробуй позже.',
                 ]);
             } catch (\Throwable $ignored) {
-                // Не прерываем работу бота.
+                Log::error('SendHandler: failed to send error message', [
+                    'error' => $ignored->getMessage(),
+                ]);
             }
         }
 
