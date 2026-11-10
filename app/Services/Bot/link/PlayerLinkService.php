@@ -12,7 +12,7 @@ class PlayerLinkService
     public function generateCode(int $telegramId): string
     {
         do {
-            $code = (string) random_int(100000, 999999);
+            $code = (string) random_int(111111, 999999);
         } while (Cache::has(self::CACHE_PREFIX . $code));
 
         Cache::put(

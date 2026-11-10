@@ -11,6 +11,8 @@ use App\Models\TelegramUserMute;
 use App\Models\BotSession;
 
 use App\Services\Bot\link\PlayerLinkHandler;
+use App\Services\Bot\Send\SendHandler;
+
 
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\AdminHandler;
@@ -56,6 +58,7 @@ class TelegramBot extends Command
         $kickPlayerHandler = new KickPlayerHandler();
         $hostLobbyHandler = new HostLobbyHandler();
 
+        $sendHandler = new SendHandler();
         $globalChatHandler = new GlobalChatHandler();
         $userInfoHandler = new UserInfoHandler();
         $playerLinkHandler = new PlayerLinkHandler();
@@ -193,10 +196,21 @@ class TelegramBot extends Command
                         | TELEGRAM TOPIC ACCESS
                         |--------------------------------------------------------------------------
                         */
-
+                        
                         if ($topicAccessHandler->handle($message, $telegram)) {
                             continue;
                         }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | SEND MOD INSTALLATION GUIDE
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($sendHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
 
                         /*
                         |--------------------------------------------------------------------------
