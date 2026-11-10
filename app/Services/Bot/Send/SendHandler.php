@@ -78,7 +78,7 @@ class SendHandler
             $telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' =>
-                    "📦 ШАГ 1. MELONLOADER\n\n"
+                    "📦 ШАГ 1. MELONLOADER Если он скачен то не трогай\n\n"
                     . "1. Скачай ZIP-архив ниже.\n"
                     . "2. Распакуй архив.\n"
                     . "3. Открой папку с распакованными файлами.\n"
@@ -153,8 +153,8 @@ class SendHandler
                 'chat_id' => $chatId,
                 'text' =>
                     "✅ УСТАНОВКА ЗАВЕРШЕНА!\n\n"
-                    . "Теперь запусти игру и проверь загрузку мода.\n\n"
-                    . "Если возникли проблемы, обратись к администрации.",
+                    . "Теперь запусти команду в боте /link для привязки аккаунта.\n\n"
+                    . "Если возникли проблемы, обратись к администрации в группе. @SusLik_Suspects",
             ]);
 
             Log::info('SendHandler: instruction sent successfully', [
