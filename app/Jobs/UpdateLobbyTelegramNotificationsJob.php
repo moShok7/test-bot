@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Jobs;
@@ -46,7 +47,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
     public function handle(Api $telegram): void
     {
-        // Получаем самые свежие данные из базы.
+        // Получаем актуальные данные.
         $lobby = Lobby::with(['clan', 'creator'])
             ->find($this->lobbyId);
 
@@ -66,7 +67,6 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             );
         };
 
-        // Основные данные.
         $roomCode = strtoupper(trim($lobby->game_room_code ?? ''));
         $safeRoomCode = $escape($roomCode);
 
@@ -97,7 +97,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         $mapName = $escape($lobby->map_name ?: 'Неизвестно');
         $gameMode = $escape($lobby->game_mode ?: 'Неизвестно');
 
-        // Статус комнаты.
+        // Статус.
         $status = strtolower(trim($lobby->status ?? 'waiting'));
 
         $statusMap = [
@@ -111,26 +111,35 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         $statusLabel = $statusMap[$status]
             ?? '⚪ НЕИЗВЕСТНЫЙ СТАТУС';
 
-        // Список игроков.
+        // Получаем состав игроков.
         $roster = $lobby->roster ?? [];
+
+        if (is_string($roster)) {
+            $decoded = json_decode($roster, true);
+            $roster = is_array($decoded) ? $decoded : [];
+        }
 
         if (!is_array($roster)) {
             $roster = [];
         }
 
+        // Убираем некорректные записи.
+        $roster = array_values(array_filter(
+            $roster,
+            fn ($player) => is_array($player)
+        ));
+
+        // Формируем список игроков.
         $rosterText = '';
 
-        if (count($roster) > 0) {
+        if (!empty($roster)) {
             foreach ($roster as $index => $player) {
-                $name = $escape($player['name'] ?? 'Неизвестно');
-
-                $character = trim(
-                    (string) ($player['character'] ?? '')
-                );
+                $name = trim((string) ($player['name'] ?? 'Неизвестно'));
+                $character = trim((string) ($player['character'] ?? ''));
 
                 $rosterText .= "\n"
                     . '<b>' . ($index + 1) . '.</b> '
-                    . '👤 ' . $name;
+                    . '👤 ' . $escape($name);
 
                 if ($character !== '') {
                     $rosterText .= ' <i>['
@@ -146,7 +155,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         $gameLink = 'https://play.suspects.io/?code='
             . urlencode($roomCode);
 
-        // Формируем красивое сообщение.
+        // Сообщение.
         $text =
             "🎮 <b>ИГРОВОЕ ЛОББИ #{$lobby->id}</b>{$clanLabel}\n"
             . "━━━━━━━━━━━━━━━━━━\n\n"
@@ -190,22 +199,11 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             ];
         }
 
-        // Оставляем кнопку просмотра состава,
-        // если список игроков уже получен от мода.
-        if (!empty($roster)) {
-            $keyboardRows[] = [
-                [
-                    'text' => '👥 Кто в лобби',
-                    'callback_data' => 'lobby_roster_' . $lobby->id,
-                ],
-            ];
-        }
+        $replyMarkup = [
+            'inline_keyboard' => $keyboardRows,
+        ];
 
-        $replyMarkup = !empty($keyboardRows)
-            ? ['inline_keyboard' => $keyboardRows]
-            : ['inline_keyboard' => []];
-
-        // Находим ранее отправленные сообщения.
+        // Получаем сообщения для редактирования.
         $notifications = LobbyNotification::query()
             ->where('lobby_id', $lobby->id)
             ->whereIn('chat_type', ['private', 'group'])
@@ -265,7 +263,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             'status' => $status,
             'players' => $playersCount,
             'roster_count' => count($roster),
-            'max_players' => $maxPlayers,
+            'roster' => $roster,
             'notifications_found' => $notifications->count(),
             'updated' => $updated,
             'failed' => $failed,
