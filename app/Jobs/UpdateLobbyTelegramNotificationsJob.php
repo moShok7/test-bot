@@ -14,8 +14,6 @@ use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Throwable;
 
-// Заменяет: app/Jobs/UpdateLobbyTelegramNotificationsJob.php
-
 class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 {
     use Dispatchable;
@@ -37,10 +35,6 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
         $this->onQueue('telegram');
     }
 
-    /**
-     * Не допускаем одновременного обновления уведомлений
-     * одного и того же лобби.
-     */
     public function middleware(): array
     {
         return [
@@ -52,6 +46,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
     public function handle(Api $telegram): void
     {
+        // Получаем самые свежие данные из базы.
         $lobby = Lobby::with(['clan', 'creator'])
             ->find($this->lobbyId);
 
@@ -63,14 +58,6 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             return;
         }
 
-        $roomCode = strtoupper(trim($lobby->game_room_code ?? ''));
-
-        $players = (int) ($lobby->current_players ?? 0);
-        $maxPlayers = (int) ($lobby->max_players ?? 12);
-
-        /**
-         * Экранирование HTML для Telegram.
-         */
         $escape = static function ($value): string {
             return htmlspecialchars(
                 (string) $value,
@@ -79,20 +66,14 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             );
         };
 
+        // Основные данные.
+        $roomCode = strtoupper(trim($lobby->game_room_code ?? ''));
         $safeRoomCode = $escape($roomCode);
 
-        /**
-         * Название клана.
-         */
-        $clanLabel = '';
+        $playersCount = (int) ($lobby->current_players ?? 0);
+        $maxPlayers = (int) ($lobby->max_players ?? 12);
 
-        if ($lobby->clan) {
-            $clanLabel = ' [' . $escape($lobby->clan->name) . ']';
-        }
-
-        /**
-         * Создатель лобби.
-         */
+        // Хост.
         $hostName = 'Неизвестно';
 
         if ($lobby->creator) {
@@ -105,62 +86,90 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
         $hostName = $escape($hostName);
 
-        /**
-         * Карта.
-         */
-        $mapName = $escape(
-            $lobby->map_name ?: 'Неизвестно'
-        );
+        // Клан.
+        $clanLabel = '';
 
-        /**
-         * Реальные состояния игры:
-         *
-         * lobby       -> waiting
-         * countdown   -> countdown
-         * running     -> started
-         * ended       -> finished
-         *
-         * initializing и prelobby
-         * не должны менять статус лобби.
-         */
+        if ($lobby->clan) {
+            $clanLabel = ' 🛡 ' . $escape($lobby->clan->name);
+        }
+
+        // Карта и режим.
+        $mapName = $escape($lobby->map_name ?: 'Неизвестно');
+        $gameMode = $escape($lobby->game_mode ?: 'Неизвестно');
+
+        // Статус комнаты.
         $status = strtolower(trim($lobby->status ?? 'waiting'));
 
         $statusMap = [
-            'waiting'   => '🟢 ОЖИДАНИЕ ИГРОКОВ',
+            'waiting' => '🟢 ОЖИДАНИЕ ИГРОКОВ',
             'countdown' => '🟡 ИДЁТ ОТСЧЁТ',
-            'started'   => '🔥 МАТЧ НАЧАЛСЯ',
-            'finished'  => '🏁 МАТЧ ЗАВЕРШЁН',
-            'closed'    => '🔴 КОМНАТА ЗАКРЫТА',
+            'started' => '🔥 МАТЧ НАЧАЛСЯ',
+            'finished' => '🏁 МАТЧ ЗАВЕРШЁН',
+            'closed' => '🔴 КОМНАТА ЗАКРЫТА',
         ];
 
         $statusLabel = $statusMap[$status]
             ?? '⚪ НЕИЗВЕСТНЫЙ СТАТУС';
 
-        /**
-         * Ссылка на игровую комнату.
-         */
+        // Список игроков.
+        $roster = $lobby->roster ?? [];
+
+        if (!is_array($roster)) {
+            $roster = [];
+        }
+
+        $rosterText = '';
+
+        if (count($roster) > 0) {
+            foreach ($roster as $index => $player) {
+                $name = $escape($player['name'] ?? 'Неизвестно');
+
+                $character = trim(
+                    (string) ($player['character'] ?? '')
+                );
+
+                $rosterText .= "\n"
+                    . '<b>' . ($index + 1) . '.</b> '
+                    . '👤 ' . $name;
+
+                if ($character !== '') {
+                    $rosterText .= ' <i>['
+                        . $escape($character)
+                        . ']</i>';
+                }
+            }
+        } else {
+            $rosterText = "\n<i>Список игроков пока недоступен</i>";
+        }
+
+        // Ссылка на игру.
         $gameLink = 'https://play.suspects.io/?code='
             . urlencode($roomCode);
 
-        /**
-         * Формируем сообщение.
-         */
-        $text = "🔔 <b>Лобби #{$lobby->id}{$clanLabel}</b>\n\n"
-            . "<b>{$statusLabel}</b>\n\n"
-            . "👤 Хост: <b>{$hostName}</b>\n"
-            . "🔑 Код: <code>{$safeRoomCode}</code>\n\n"
-            . "👥 <b>ИГРОКИ: {$players}/{$maxPlayers}</b>\n\n"
-            . "🗺 Карта: {$mapName}\n";
+        // Формируем красивое сообщение.
+        $text =
+            "🎮 <b>ИГРОВОЕ ЛОББИ #{$lobby->id}</b>{$clanLabel}\n"
+            . "━━━━━━━━━━━━━━━━━━\n\n"
 
-        /**
-         * Кнопки собираем построчно:
-         * - "Войти" и "Скопировать код" — только пока лобби
-         *   ожидает игроков или идёт отсчёт;
-         * - "Кто в лобби" — пока есть сохранённый ростер
-         *   (приходит от мода через /api/player-roster),
-         *   показываем независимо от статуса матча, чтобы
-         *   состав можно было посмотреть и во время, и после игры.
-         */
+            . "{$statusLabel}\n\n"
+
+            . "👑 <b>ХОСТ</b>\n"
+            . "└ {$hostName}\n\n"
+
+            . "🔑 <b>КОД КОМНАТЫ</b>\n"
+            . "└ <code>{$safeRoomCode}</code>\n\n"
+
+            . "👥 <b>ИГРОКИ: {$playersCount}/{$maxPlayers}</b>\n"
+            . "━━━━━━━━━━━━━━━━━━\n"
+            . "<b>СОСТАВ КОМНАТЫ</b>"
+            . $rosterText
+            . "\n\n"
+
+            . "━━━━━━━━━━━━━━━━━━\n"
+            . "🗺 <b>КАРТА:</b> {$mapName}\n"
+            . "🎯 <b>РЕЖИМ:</b> {$gameMode}\n";
+
+        // Кнопки.
         $keyboardRows = [];
 
         if (in_array($status, ['waiting', 'countdown'], true)) {
@@ -179,11 +188,11 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
                     ],
                 ],
             ];
-
-            $text .= "\n👇 <b>Для входа в игру нажми кнопку ниже:</b>";
         }
 
-        if (!empty($lobby->roster)) {
+        // Оставляем кнопку просмотра состава,
+        // если список игроков уже получен от мода.
+        if (!empty($roster)) {
             $keyboardRows[] = [
                 [
                     'text' => '👥 Кто в лобби',
@@ -194,12 +203,9 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 
         $replyMarkup = !empty($keyboardRows)
             ? ['inline_keyboard' => $keyboardRows]
-            : null;
+            : ['inline_keyboard' => []];
 
-        /**
-         * Получаем существующие уведомления.
-         * Новые сообщения здесь НЕ создаются.
-         */
+        // Находим ранее отправленные сообщения.
         $notifications = LobbyNotification::query()
             ->where('lobby_id', $lobby->id)
             ->whereIn('chat_type', ['private', 'group'])
@@ -215,59 +221,41 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
                 empty($notification->telegram_message_id)
             ) {
                 $skipped++;
-
                 continue;
             }
 
             try {
-                $params = [
+                $telegram->editMessageText([
                     'chat_id' => $notification->chat_id,
                     'message_id' => $notification->telegram_message_id,
                     'text' => $text,
                     'parse_mode' => 'HTML',
-                ];
-
-                if ($replyMarkup !== null) {
-                    $params['reply_markup'] = json_encode(
+                    'reply_markup' => json_encode(
                         $replyMarkup,
-                        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-                    );
-                } else {
-                    // Нет ни одной кнопки — убираем клавиатуру совсем.
-                    $params['reply_markup'] = json_encode([
-                        'inline_keyboard' => [],
-                    ]);
-                }
-
-                $telegram->editMessageText($params);
+                        JSON_UNESCAPED_UNICODE
+                        | JSON_UNESCAPED_SLASHES
+                    ),
+                ]);
 
                 $updated++;
 
             } catch (Throwable $e) {
                 $error = mb_strtolower($e->getMessage());
 
-                /**
-                 * Telegram сообщает, что сообщение
-                 * уже содержит такой же текст и кнопки.
-                 */
                 if (str_contains($error, 'message is not modified')) {
                     $updated++;
-
                     continue;
                 }
 
                 $failed++;
 
-                Log::warning(
-                    'Не удалось обновить Telegram-сообщение',
-                    [
-                        'lobby_id' => $lobby->id,
-                        'notification_id' => $notification->id,
-                        'chat_id' => $notification->chat_id,
-                        'message_id' => $notification->telegram_message_id,
-                        'error' => $e->getMessage(),
-                    ]
-                );
+                Log::warning('Не удалось обновить Telegram-сообщение', [
+                    'lobby_id' => $lobby->id,
+                    'notification_id' => $notification->id,
+                    'chat_id' => $notification->chat_id,
+                    'message_id' => $notification->telegram_message_id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 
@@ -275,9 +263,9 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             'lobby_id' => $lobby->id,
             'room_code' => $roomCode,
             'status' => $status,
-            'players' => $players,
+            'players' => $playersCount,
+            'roster_count' => count($roster),
             'max_players' => $maxPlayers,
-            'has_roster' => !empty($lobby->roster),
             'notifications_found' => $notifications->count(),
             'updated' => $updated,
             'failed' => $failed,

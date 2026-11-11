@@ -19,10 +19,9 @@ class RoomEventController extends Controller
 {
     public function store(Request $request)
     {
-        // Всегда возвращаем JSON при ошибках валидации.
         $request->headers->set('Accept', 'application/json');
 
-        // Проверка секретного токена мода.
+        // Проверка токена мода.
         $token = $request->header('X-Auth-Token');
         $expectedToken = config('services.room_api.token');
 
@@ -37,7 +36,7 @@ class RoomEventController extends Controller
             ], 401);
         }
 
-        // Проверка входящих данных.
+        // Валидация.
         $validated = $request->validate([
             'action' => ['nullable', 'string', 'max:30'],
 
@@ -88,7 +87,6 @@ class RoomEventController extends Controller
         $merged = false;
         $shouldNotify = false;
         $changes = [];
-
         $resolvedCreator = null;
 
         try {
@@ -103,12 +101,7 @@ class RoomEventController extends Controller
                 &$changes,
                 &$resolvedCreator
             ) {
-                /*
-                 * Получаем все записи с таким коротким кодом.
-                 * Основная запись выбирается с приоритетом:
-                 * 1. creator_id заполнен.
-                 * 2. external_room_id заполнен.
-                 */
+                // Ищем все лобби с одинаковым кодом.
                 $lobbies = Lobby::query()
                     ->where('game_room_code', $roomCode)
                     ->orderByRaw('(creator_id IS NULL) ASC')
@@ -117,7 +110,7 @@ class RoomEventController extends Controller
                     ->lockForUpdate()
                     ->get();
 
-                // Пытаемся найти создателя по TFG Player ID.
+                // Определяем создателя по TFG Player ID.
                 if (!empty($validated['tfg_player_id'])) {
                     $resolvedCreator = TelegramUser::query()
                         ->where(
@@ -129,10 +122,7 @@ class RoomEventController extends Controller
 
                 $resolvedCreatorId = $resolvedCreator?->id;
 
-                // -------------------------------------------------
                 // Создание нового лобби.
-                // -------------------------------------------------
-
                 if ($lobbies->isEmpty()) {
                     if ($action !== 'create') {
                         return;
@@ -161,10 +151,10 @@ class RoomEventController extends Controller
                         'status' => $lobby->status,
                     ];
                 } else {
-                    // Первая запись после сортировки становится основной.
+                    // Основная запись.
                     $lobby = $lobbies->first();
 
-                    // Объединяем остальные записи с таким же кодом.
+                    // Объединяем дубликаты.
                     foreach ($lobbies->skip(1) as $duplicate) {
                         $this->mergeDuplicateLobby($lobby, $duplicate);
 
@@ -172,16 +162,14 @@ class RoomEventController extends Controller
                         $shouldNotify = true;
                     }
 
-                    // Обновляем игровые данные основного лобби.
                     $updates = [];
 
-                    $fields = [
+                    // Игровые данные.
+                    foreach ([
                         'current_players',
                         'map_name',
                         'game_mode',
-                    ];
-
-                    foreach ($fields as $field) {
+                    ] as $field) {
                         if (
                             array_key_exists($field, $validated) &&
                             $validated[$field] !== null
@@ -190,7 +178,7 @@ class RoomEventController extends Controller
                         }
                     }
 
-                    // Внешний ID игровой комнаты.
+                    // Внешний ID комнаты.
                     if (!empty($validated['room_id'])) {
                         $updates['external_room_id'] = $validated['room_id'];
                     }
@@ -203,7 +191,7 @@ class RoomEventController extends Controller
                         $updates['status'] = $validated['status'];
                     }
 
-                    // Завершённую комнату нельзя вернуть в waiting или started.
+                    // Завершённую комнату нельзя вернуть в активную.
                     $terminalStatuses = ['finished', 'closed'];
 
                     if (
@@ -218,7 +206,7 @@ class RoomEventController extends Controller
                         unset($updates['status']);
                     }
 
-                    // Если создатель ещё не определён, пробуем заполнить creator_id.
+                    // Заполняем создателя, если он ещё неизвестен.
                     if (
                         empty($lobby->creator_id) &&
                         $resolvedCreatorId
@@ -241,7 +229,7 @@ class RoomEventController extends Controller
                     }
                 }
 
-                // Если создатель определился, добавляем его в игроков лобби.
+                // Добавляем создателя в игроков.
                 if ($resolvedCreatorId && $lobby) {
                     LobbyPlayer::firstOrCreate([
                         'lobby_id' => $lobby->id,
@@ -249,7 +237,7 @@ class RoomEventController extends Controller
                     ]);
                 }
 
-                // Записываем историю события.
+                // Сохраняем историю события.
                 if ($lobby) {
                     RoomEvent::create([
                         'action' => $action,
@@ -274,7 +262,7 @@ class RoomEventController extends Controller
             throw $e;
         }
 
-        // Лобби не найдено и не было создано.
+        // Лобби не найдено.
         if (!$lobby) {
             Log::warning('Игровое лобби не найдено', [
                 'room_code' => $roomCode,
@@ -288,10 +276,13 @@ class RoomEventController extends Controller
             ], 404);
         }
 
-        // -------------------------------------------------
-        // Определяем создателя.
-        // -------------------------------------------------
+        // Даже если roster уже обновил количество в БД,
+        // player_count_update должен обновить Telegram.
+        if ($action === 'player_count_update') {
+            $shouldNotify = true;
+        }
 
+        // Получаем создателя.
         if (!$resolvedCreator && $lobby->creator_id) {
             $resolvedCreator = TelegramUser::find($lobby->creator_id);
         }
@@ -304,50 +295,43 @@ class RoomEventController extends Controller
             ? '@' . $resolvedCreator->username
             : ($resolvedCreator?->first_name ?: 'Игрок');
 
-        // -------------------------------------------------
-        // Первоначальная рассылка или обновление сообщений.
-        // -------------------------------------------------
-
+        // Проверяем существующие уведомления.
         $initialNotificationSent = false;
 
-        if ($lobby->status === 'waiting') {
-            $alreadyHasNotifications = LobbyNotification::query()
-                ->where('lobby_id', $lobby->id)
-                ->exists();
+        $alreadyHasNotifications = LobbyNotification::query()
+            ->where('lobby_id', $lobby->id)
+            ->exists();
 
-            /*
-             * Если сообщений ещё нет, запускаем первоначальную рассылку.
-             * Это работает и тогда, когда создатель неизвестен.
-             *
-             * ShouldBeUnique в SendLobbyNotificationsJob защищает
-             * от параллельных запусков для одного лобби.
-             */
-            if (!$alreadyHasNotifications) {
-                SendLobbyNotificationsJob::dispatch(
-                    lobbyId: (int) $lobby->id,
-                    creatorTelegramId: $creatorTelegramId,
-                    creatorName: (string) $creatorName,
-                    count: 100,
-                )->onQueue('telegram');
+        // Первоначальная рассылка.
+        if (
+            $lobby->status === 'waiting' &&
+            !$alreadyHasNotifications
+        ) {
+            SendLobbyNotificationsJob::dispatch(
+                lobbyId: (int) $lobby->id,
+                creatorTelegramId: $creatorTelegramId,
+                creatorName: (string) $creatorName,
+                count: 100,
+            )->onQueue('telegram');
 
-                $initialNotificationSent = true;
-            }
+            $initialNotificationSent = true;
         }
 
-        /*
-         * Если уведомления уже существуют и данные изменились,
-         * обновляем существующие сообщения.
-         */
+        // Обновление существующих сообщений.
         if (
             $shouldNotify &&
             !$initialNotificationSent &&
-            LobbyNotification::query()
-                ->where('lobby_id', $lobby->id)
-                ->exists()
+            $alreadyHasNotifications
         ) {
             UpdateLobbyTelegramNotificationsJob::dispatch(
-                $lobby->id
+                (int) $lobby->id
             )->onQueue('telegram');
+
+            Log::info('Запущено обновление Telegram после RoomEvent', [
+                'lobby_id' => $lobby->id,
+                'action' => $action,
+                'current_players' => $lobby->current_players,
+            ]);
         }
 
         Log::info('Игровое лобби обработано', [
@@ -359,6 +343,7 @@ class RoomEventController extends Controller
             'creator_telegram_id' => $creatorTelegramId,
             'external_room_id' => $lobby->external_room_id,
             'initial_notification_sent' => $initialNotificationSent,
+            'should_notify' => $shouldNotify,
             'changes' => $changes,
         ]);
 
@@ -374,6 +359,11 @@ class RoomEventController extends Controller
             'creator_id' => $lobby->creator_id,
             'room_code' => $roomCode,
             'updated' => $changes,
+            'telegram_update_requested' => (
+                $shouldNotify &&
+                !$initialNotificationSent &&
+                $alreadyHasNotifications
+            ),
         ]);
     }
 
@@ -386,7 +376,7 @@ class RoomEventController extends Controller
     ): void {
         $sourceId = $source->id;
 
-        // Переносим игровые поля, если в основной записи они пустые.
+        // Игровые поля.
         $fields = [
             'current_players',
             'map_name',
@@ -406,7 +396,7 @@ class RoomEventController extends Controller
             }
         }
 
-        // Переносим внешний ID, если у основной записи его нет.
+        // Внешний ID.
         if (
             empty($target->external_room_id) &&
             !empty($source->external_room_id)
@@ -419,12 +409,12 @@ class RoomEventController extends Controller
             $target->external_room_id = $roomId;
         }
 
-        // Переносим creator_id, если он отсутствует.
+        // Создатель.
         if (empty($target->creator_id) && !empty($source->creator_id)) {
             $target->creator_id = $source->creator_id;
         }
 
-        // Сохраняем более актуальный статус.
+        // Статус.
         $terminalStatuses = ['finished', 'closed'];
 
         if (
@@ -439,11 +429,11 @@ class RoomEventController extends Controller
 
         $target->save();
 
-        // Переносим список игроков дубликата.
+        // Перенос игроков.
         LobbyPlayer::query()
             ->where('lobby_id', $sourceId)
             ->get()
-            ->each(function ($player) use ($target, $sourceId) {
+            ->each(function ($player) use ($target) {
                 LobbyPlayer::firstOrCreate([
                     'lobby_id' => $target->id,
                     'telegram_user_id' => $player->telegram_user_id,
@@ -454,14 +444,14 @@ class RoomEventController extends Controller
             ->where('lobby_id', $sourceId)
             ->delete();
 
-        // Переносим Telegram-сообщения на основную запись.
+        // Перенос Telegram-уведомлений.
         LobbyNotification::query()
             ->where('lobby_id', $sourceId)
             ->update([
                 'lobby_id' => $target->id,
             ]);
 
-        // Удаляем старый дубликат.
+        // Удаляем дубликат.
         $source->delete();
 
         Log::warning('Дубликат игрового лобби объединён', [

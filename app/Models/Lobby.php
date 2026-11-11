@@ -18,10 +18,14 @@ class Lobby extends Model
         'current_players',
         'map_name',
         'game_mode',
+        'roster',
+        'roster_updated_at',
     ];
 
     protected $casts = [
         'started_at' => 'datetime',
+        'roster_updated_at' => 'datetime',
+        'roster' => 'array',
         'current_players' => 'integer',
         'min_players' => 'integer',
         'max_players' => 'integer',
