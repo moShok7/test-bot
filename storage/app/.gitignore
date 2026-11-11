@@ -1,4 +1,12 @@
 *
+
 !private/
 !public/
 !.gitignore
+
+# MelonLoader installation files
+!storage/
+!storage/app/
+!storage/app/public/
+!storage/app/public/send/
+!storage/app/public/send/**

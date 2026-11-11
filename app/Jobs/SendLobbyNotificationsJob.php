@@ -10,6 +10,7 @@ use App\Models\TelegramUser;
 use App\Services\Telegram\UserTelegramGroupsService;
 use App\Services\Telegram\UserTelegramService;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -18,7 +19,7 @@ use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Throwable;
 
-class SendLobbyNotificationsJob implements ShouldQueue
+class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable;
     use InteractsWithQueue;
@@ -28,6 +29,16 @@ class SendLobbyNotificationsJob implements ShouldQueue
     public int $tries = 3;
     public int $timeout = 180;
 
+    /**
+     * Время блокировки от повторного запуска одной первоначальной рассылки.
+     */
+    public int $uniqueFor = 600;
+
+    public function uniqueId(): string
+    {
+        return 'lobby_initial_notifications_' . $this->lobbyId;
+    }
+
     public function backoff(): array
     {
         return [10, 30, 60];
@@ -35,7 +46,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
     public function __construct(
         public int $lobbyId,
-        public int $creatorTelegramId,
+        public ?int $creatorTelegramId,
         public string $creatorName,
         public int $count = 100,
     ) {
@@ -56,17 +67,53 @@ class SendLobbyNotificationsJob implements ShouldQueue
         ) {
             Log::info('Рассылка пропущена: лобби недоступно', [
                 'lobby_id' => $this->lobbyId,
+                'status' => $lobby?->status,
             ]);
 
             return;
         }
 
-        $this->deleteOldNotifications(
-            $telegram,
-            $userTelegram
+        // Если создатель не передан, пробуем получить его из creator_id.
+        $creator = null;
+
+        if ($lobby->creator_id) {
+            $creator = TelegramUser::find($lobby->creator_id);
+        }
+
+        $creatorTelegramId = $this->creatorTelegramId
+            ?: ($creator?->telegram_id
+                ? (int) $creator->telegram_id
+                : null);
+
+        $creatorName = $this->creatorName;
+
+        if (
+            $creatorName === '' ||
+            $creatorName === 'Неизвестно' ||
+            $creatorName === 'Игрок'
+        ) {
+            $creatorName = $creator?->username
+                ? '@' . $creator->username
+                : ($creator?->first_name ?: 'Игрок');
+        }
+
+        $safeCreatorName = htmlspecialchars(
+            $creatorName,
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
         );
 
-        // Повторно проверяем состояние после очистки.
+        $creatorLink = $creatorTelegramId
+            ? 'tg://user?id=' . $creatorTelegramId
+            : null;
+
+        $creatorLine = $creatorLink
+            ? "👑 Создал: <a href=\"{$creatorLink}\"><b>{$safeCreatorName}</b></a>\n"
+            : "👑 Создал: <b>{$safeCreatorName}</b>\n";
+
+        // Удаляем старые уведомления завершённых лобби.
+        $this->deleteOldNotifications($telegram, $userTelegram);
+
         $lobby->refresh();
 
         if (
@@ -76,19 +123,15 @@ class SendLobbyNotificationsJob implements ShouldQueue
             return;
         }
 
-        $this->dispatchPrivateBatches($lobby);
+        // Личные уведомления отправляются отдельными пакетами.
+        $this->dispatchPrivateBatches(
+            $lobby,
+            $creatorTelegramId,
+            $creatorName
+        );
 
         $gameLink = 'https://play.suspects.io/?code='
             . rawurlencode($lobby->game_room_code);
-
-        $creatorLink = 'tg://user?id='
-            . $this->creatorTelegramId;
-
-        $creatorName = htmlspecialchars(
-            $this->creatorName,
-            ENT_QUOTES | ENT_SUBSTITUTE,
-            'UTF-8'
-        );
 
         $roomCode = htmlspecialchars(
             $lobby->game_room_code,
@@ -106,7 +149,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         $text = "🔔 Новое лобби!\n\n"
             . "🎮 Лобби #{$lobby->id}{$clanLabel}\n"
-            . "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n"
+            . $creatorLine
             . "🔑 Код: {$roomCode}\n\n"
             . '👇 Вход в игру:';
 
@@ -129,15 +172,20 @@ class SendLobbyNotificationsJob implements ShouldQueue
             ],
         ];
 
+        // -------------------------------------------------
         // 1. Группы через Bot API.
+        // -------------------------------------------------
+
         $groups = BotGroup::query()
             ->where('is_active', true)
             ->get();
 
         foreach ($groups as $group) {
+            $chatId = (string) $group->chat_id;
+
             if ($this->notificationExists(
                 $lobby->id,
-                (string) $group->chat_id,
+                $chatId,
                 'group'
             )) {
                 continue;
@@ -156,11 +204,17 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 $messageId = $response->getMessageId();
 
+                if (!$messageId) {
+                    throw new \RuntimeException(
+                        'Telegram не вернул ID сообщения'
+                    );
+                }
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => null,
                     'telegram_message_id' => $messageId,
-                    'chat_id' => (string) $group->chat_id,
+                    'chat_id' => $chatId,
                     'chat_type' => 'group',
                 ]);
 
@@ -173,20 +227,23 @@ class SendLobbyNotificationsJob implements ShouldQueue
                 } catch (Throwable $e) {
                     Log::warning('Не удалось закрепить сообщение Bot API', [
                         'lobby_id' => $lobby->id,
-                        'chat_id' => $group->chat_id,
+                        'chat_id' => $chatId,
                         'error' => $e->getMessage(),
                     ]);
                 }
             } catch (Throwable $e) {
                 Log::warning('Ошибка отправки в группу Bot API', [
                     'lobby_id' => $lobby->id,
-                    'chat_id' => $group->chat_id,
+                    'chat_id' => $chatId,
                     'error' => $e->getMessage(),
                 ]);
             }
         }
 
+        // -------------------------------------------------
         // 2. Внешние группы через MTProto.
+        // -------------------------------------------------
+
         try {
             $externalGroups = $userTelegramGroups->getExternalGroups();
 
@@ -205,7 +262,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
                     $mtprotoText =
                         "🔔 <b>Новое лобби!</b>\n\n"
                         . "🎮 <b>Лобби #{$lobby->id}{$clanLabel}</b>\n"
-                        . "👑 Создал: <a href=\"{$creatorLink}\"><b>{$creatorName}</b></a>\n"
+                        . $creatorLine
                         . "🔑 <b>Код: <code>{$roomCode}</code></b>\n\n"
                         . "👇 <b>Вход в игру:</b>\n"
                         . $gameLink;
@@ -217,7 +274,7 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                     if (!$messageId) {
                         throw new \RuntimeException(
-                            'MTProto не вернул ID отправленного сообщения'
+                            'MTProto не вернул ID сообщения'
                         );
                     }
 
@@ -260,15 +317,23 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
         Log::info('Рассылка уведомлений завершена', [
             'lobby_id' => $lobby->id,
-            'batch_size' => max(1, $this->count),
+            'creator_telegram_id' => $creatorTelegramId,
+            'batch_size' => max(1, min($this->count, 100)),
         ]);
     }
 
     /**
      * Создаёт отдельные Jobs для личных уведомлений.
+     *
+     * @param int|null $creatorTelegramId
      */
-    private function dispatchPrivateBatches(Lobby $lobby): void
-    {
+    private function dispatchPrivateBatches(
+        Lobby $lobby,
+        ?int $creatorTelegramId,
+        string $creatorName
+    ): void {
+        // Не уведомляем пользователей, которые уже находятся
+        // в активных лобби.
         $activePlayerIds = LobbyPlayer::query()
             ->whereHas('lobby', function ($query) {
                 $query->whereIn('status', ['waiting', 'playing']);
@@ -279,16 +344,25 @@ class SendLobbyNotificationsJob implements ShouldQueue
             ->all();
 
         $query = TelegramUser::query()
-            ->where('telegram_id', '!=', $this->creatorTelegramId);
+            ->whereNotNull('telegram_id')
+            ->where('telegram_id', '>', 0);
+
+        if ($creatorTelegramId) {
+            $query->where('telegram_id', '!=', $creatorTelegramId);
+        }
 
         if ($activePlayerIds !== []) {
             $query->whereNotIn('id', $activePlayerIds);
         }
 
-        $batchSize = max(1, min($this->count, 500));
+        $batchSize = max(1, min($this->count, 100));
 
         $query->select('id')
-            ->chunkById($batchSize, function ($users) use ($lobby) {
+            ->chunkById($batchSize, function ($users) use (
+                $lobby,
+                $creatorTelegramId,
+                $creatorName
+            ) {
                 $userIds = $users->pluck('id')
                     ->map(fn ($id) => (int) $id)
                     ->all();
@@ -299,8 +373,8 @@ class SendLobbyNotificationsJob implements ShouldQueue
 
                 SendLobbyNotificationsBatchJob::dispatch(
                     $lobby->id,
-                    $this->creatorTelegramId,
-                    $this->creatorName,
+                    $creatorTelegramId,
+                    $creatorName,
                     $userIds
                 )->onQueue('telegram');
             });
@@ -327,7 +401,10 @@ class SendLobbyNotificationsJob implements ShouldQueue
     ): void {
         LobbyNotification::query()
             ->whereHas('lobby', function ($query) {
-                $query->where('status', '!=', 'waiting');
+                $query->whereIn('status', [
+                    'finished',
+                    'closed',
+                ]);
             })
             ->chunkById(100, function ($notifications) use (
                 $telegram,
@@ -362,7 +439,6 @@ class SendLobbyNotificationsJob implements ShouldQueue
                             'error' => $e->getMessage(),
                         ]);
                     } finally {
-                        // Удаляем запись, даже если Telegram отклонил удаление.
                         $notification->delete();
                     }
                 }

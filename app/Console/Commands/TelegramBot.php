@@ -11,6 +11,8 @@ use App\Models\TelegramUserMute;
 use App\Models\BotSession;
 
 use App\Services\Bot\link\PlayerLinkHandler;
+use App\Services\Bot\Send\SendHandler;
+
 
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\AdminHandler;
@@ -56,6 +58,10 @@ class TelegramBot extends Command
         $kickPlayerHandler = new KickPlayerHandler();
         $hostLobbyHandler = new HostLobbyHandler();
 
+<<<<<<< HEAD
+=======
+        $sendHandler = new SendHandler();
+>>>>>>> b127b8edf12eb5f913a9e0a12e9122638396a216
         $globalChatHandler = new GlobalChatHandler();
         $userInfoHandler = new UserInfoHandler();
         $playerLinkHandler = new PlayerLinkHandler();
@@ -92,12 +98,14 @@ class TelegramBot extends Command
                             $callback = $update->callbackQuery;
                             $callbackData = (string) ($callback->data ?? '');
 
+                            // CLANS
                             if (str_starts_with($callbackData, 'clan_')) {
                                 if ($clanHandler->handleCallback($callback, $telegram)) {
                                     continue;
                                 }
                             }
 
+                            // KICK PLAYER
                             if (str_starts_with($callbackData, 'kick_player_')) {
                                 $kickPlayerHandler->handle(
                                     (object) [
@@ -109,6 +117,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // JOIN LOBBY
                             if (str_starts_with($callbackData, 'join_lobby_')) {
                                 $message = $callback->message;
 
@@ -129,6 +138,17 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // HOST LOBBY: DELETE / CONFIRM / CANCEL
+                            if (
+                                $hostLobbyHandler->handleCallback(
+                                    $callback,
+                                    $telegram
+                                )
+                            ) {
+                                continue;
+                            }
+
+                            // PREMIER LOBBY APPLICATIONS
                             if (
                                 $premierApplicationHandler->handleCallback(
                                     $callback,
@@ -138,6 +158,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
+                            // ADMIN
                             $adminHandler->handleCallback($callback, $telegram);
 
                             continue;
@@ -178,10 +199,21 @@ class TelegramBot extends Command
                         | TELEGRAM TOPIC ACCESS
                         |--------------------------------------------------------------------------
                         */
-
+                        
                         if ($topicAccessHandler->handle($message, $telegram)) {
                             continue;
                         }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | SEND MOD INSTALLATION GUIDE
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($sendHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
 
                         /*
                         |--------------------------------------------------------------------------
@@ -317,6 +349,15 @@ class TelegramBot extends Command
                             continue;
                         }
 
+<<<<<<< HEAD
+=======
+                        /*
+                        |--------------------------------------------------------------------------
+                        | PLAYER LINK
+                        |--------------------------------------------------------------------------
+                        */
+
+>>>>>>> b127b8edf12eb5f913a9e0a12e9122638396a216
                         if ($playerLinkHandler->handle($message, $telegram)) {
                             continue;
                         }
@@ -368,6 +409,16 @@ class TelegramBot extends Command
                                 '🎮 Игровое меню'
                             );
 
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | HOST LOBBY
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($hostLobbyHandler->handle($message, $telegram)) {
                             continue;
                         }
 
