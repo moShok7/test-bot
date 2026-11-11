@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Throwable;
 
+// Заменяет: app/Jobs/UpdateLobbyTelegramNotificationsJob.php
+
 class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
 {
     use Dispatchable;
@@ -151,35 +153,48 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             . "🗺 Карта: {$mapName}\n";
 
         /**
-         * Кнопки доступны во время ожидания
-         * и обратного отсчёта.
-         *
-         * После начала матча кнопки убираются.
+         * Кнопки собираем построчно:
+         * - "Войти" и "Скопировать код" — только пока лобби
+         *   ожидает игроков или идёт отсчёт;
+         * - "Кто в лобби" — пока есть сохранённый ростер
+         *   (приходит от мода через /api/player-roster),
+         *   показываем независимо от статуса матча, чтобы
+         *   состав можно было посмотреть и во время, и после игры.
          */
-        $replyMarkup = null;
+        $keyboardRows = [];
 
         if (in_array($status, ['waiting', 'countdown'], true)) {
-            $replyMarkup = [
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' => '🎮 Войти в лобби',
-                            'url' => $gameLink,
-                        ],
-                    ],
-                    [
-                        [
-                            'text' => '📋 Скопировать код',
-                            'copy_text' => [
-                                'text' => $roomCode,
-                            ],
-                        ],
+            $keyboardRows[] = [
+                [
+                    'text' => '🎮 Войти в лобби',
+                    'url' => $gameLink,
+                ],
+            ];
+
+            $keyboardRows[] = [
+                [
+                    'text' => '📋 Скопировать код',
+                    'copy_text' => [
+                        'text' => $roomCode,
                     ],
                 ],
             ];
 
             $text .= "\n👇 <b>Для входа в игру нажми кнопку ниже:</b>";
         }
+
+        if (!empty($lobby->roster)) {
+            $keyboardRows[] = [
+                [
+                    'text' => '👥 Кто в лобби',
+                    'callback_data' => 'lobby_roster_' . $lobby->id,
+                ],
+            ];
+        }
+
+        $replyMarkup = !empty($keyboardRows)
+            ? ['inline_keyboard' => $keyboardRows]
+            : null;
 
         /**
          * Получаем существующие уведомления.
@@ -218,7 +233,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
                         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
                     );
                 } else {
-                    // Удаляем кнопки после начала или завершения матча.
+                    // Нет ни одной кнопки — убираем клавиатуру совсем.
                     $params['reply_markup'] = json_encode([
                         'inline_keyboard' => [],
                     ]);
@@ -262,6 +277,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             'status' => $status,
             'players' => $players,
             'max_players' => $maxPlayers,
+            'has_roster' => !empty($lobby->roster),
             'notifications_found' => $notifications->count(),
             'updated' => $updated,
             'failed' => $failed,

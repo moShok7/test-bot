@@ -9,6 +9,7 @@ use Telegram\Bot\Api;
 use App\Models\TelegramUser;
 use App\Models\TelegramUserMute;
 use App\Models\BotSession;
+use App\Models\Lobby;
 
 use App\Services\Bot\link\PlayerLinkHandler;
 use App\Services\Bot\Send\SendHandler;
@@ -32,6 +33,8 @@ use App\Services\Bot\Lobby\HostLobbyHandler;
 
 use App\Services\Bot\Clan\ClanHandler;
 use App\Services\Bot\Clan\ClanModerationService;
+
+// Заменяет: app/Console/Commands/TelegramBot.php
 
 class TelegramBot extends Command
 {
@@ -131,6 +134,17 @@ class TelegramBot extends Command
                                 } catch (\Throwable $e) {
                                     // Callback мог быть уже обработан.
                                 }
+
+                                continue;
+                            }
+
+                            // LOBBY ROSTER (кто в лобби — из данных мода)
+                            if (str_starts_with($callbackData, 'lobby_roster_')) {
+                                $this->handleLobbyRosterCallback(
+                                    $callback,
+                                    $telegram,
+                                    $callbackData
+                                );
 
                                 continue;
                             }
@@ -494,6 +508,85 @@ class TelegramBot extends Command
                 sleep(5);
 
                 continue;
+            }
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOBBY ROSTER CALLBACK HANDLER («Кто в лобби»)
+    |--------------------------------------------------------------------------
+    */
+
+    private function handleLobbyRosterCallback(
+        $callback,
+        Api $telegram,
+        string $callbackData
+    ): void {
+        $lobbyId = (int) str_replace('lobby_roster_', '', $callbackData);
+        $chatId = $callback->from->id ?? null;
+
+        try {
+            $lobby = Lobby::find($lobbyId);
+
+            if (!$lobby || empty($lobby->roster)) {
+                $telegram->answerCallbackQuery([
+                    'callback_query_id' => $callback->id,
+                    'text' => 'Список игроков пока пуст.',
+                    'show_alert' => true,
+                ]);
+
+                return;
+            }
+
+            $escape = static function ($value): string {
+                return htmlspecialchars(
+                    (string) $value,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                );
+            };
+
+            $lines = collect($lobby->roster)
+                ->map(function ($player, $index) use ($escape) {
+                    $name = $escape($player['name'] ?? 'Игрок');
+                    $character = $escape($player['character'] ?? '—');
+
+                    return ($index + 1) . ". {$name} — {$character}";
+                })
+                ->implode("\n");
+
+            $roomCode = $escape(strtoupper((string) ($lobby->game_room_code ?? '')));
+
+            $text = "👥 <b>Кто сейчас в лобби {$roomCode}:</b>\n\n{$lines}";
+
+            if ($chatId) {
+                $telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => $text,
+                    'parse_mode' => 'HTML',
+                ]);
+            }
+
+            $telegram->answerCallbackQuery([
+                'callback_query_id' => $callback->id,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::warning('Не удалось отправить состав лобби', [
+                'lobby_id' => $lobbyId,
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+            ]);
+
+            try {
+                $telegram->answerCallbackQuery([
+                    'callback_query_id' => $callback->id,
+                    'text' => 'Не получилось отправить список — напиши боту /start и попробуй снова.',
+                    'show_alert' => true,
+                ]);
+            } catch (\Throwable $ignored) {
+                // Не прерываем основной цикл бота.
             }
         }
     }
