@@ -174,8 +174,7 @@ class UpdateLobbyTelegramNotificationsJob implements ShouldQueue
             . "\n\n"
 
             . "━━━━━━━━━━━━━━━━━━\n"
-            . "🗺 <b>КАРТА:</b> {$mapName}\n"
-            . "🎯 <b>РЕЖИМ:</b> {$gameMode}\n";
+            . "🗺 <b>КАРТА:</b> {$mapName}\n";
 
         // Кнопки.
         $keyboardRows = [];
