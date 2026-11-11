@@ -58,10 +58,7 @@ class TelegramBot extends Command
         $kickPlayerHandler = new KickPlayerHandler();
         $hostLobbyHandler = new HostLobbyHandler();
 
-<<<<<<< HEAD
-=======
         $sendHandler = new SendHandler();
->>>>>>> b127b8edf12eb5f913a9e0a12e9122638396a216
         $globalChatHandler = new GlobalChatHandler();
         $userInfoHandler = new UserInfoHandler();
         $playerLinkHandler = new PlayerLinkHandler();
@@ -235,25 +232,12 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
-                        | DELETE REGULAR LOBBY
-                        |--------------------------------------------------------------------------
-                        |
-                        | Обрабатываем текстовые кнопки удаления до сброса сессии.
-                        | Callback для удаления обычного лобби больше не используется.
-                        |
-                        */
-
-                        if ($hostLobbyHandler->handleDeleteMessage($message, $telegram)) {
-                            continue;
-                        }
-
-                        /*
-                        |--------------------------------------------------------------------------
                         | RESET SESSION
                         |--------------------------------------------------------------------------
                         */
 
                         $resetSessionButtons = [
+                            '❌ Удалить лобби',
                             '⬅️ Главное меню',
                         ];
 
@@ -349,15 +333,12 @@ class TelegramBot extends Command
                             continue;
                         }
 
-<<<<<<< HEAD
-=======
                         /*
                         |--------------------------------------------------------------------------
                         | PLAYER LINK
                         |--------------------------------------------------------------------------
                         */
 
->>>>>>> b127b8edf12eb5f913a9e0a12e9122638396a216
                         if ($playerLinkHandler->handle($message, $telegram)) {
                             continue;
                         }
