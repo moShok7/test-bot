@@ -8,16 +8,18 @@ use Telegram\Bot\Api;
 
 use App\Models\TelegramUser;
 use App\Models\TelegramUserMute;
+use App\Models\TelegramUserBan;
 use App\Models\BotSession;
 use App\Models\Lobby;
 
 use App\Services\Bot\link\PlayerLinkHandler;
 use App\Services\Bot\Send\SendHandler;
 
+use App\Services\Bot\Admin\DeleteLobbyNotificationsHandler;
+use App\Services\Bot\Admin\BanUserHandler;
 
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\AdminHandler;
-use App\Services\Bot\Admin\DeleteLobbyNotificationsHandler;
 use App\Services\Bot\GlobalChatHandler;
 use App\Services\Bot\TopicAccessHandler;
 use App\Services\Bot\UserInfoHandler;
@@ -35,8 +37,6 @@ use App\Services\Bot\Lobby\HostLobbyHandler;
 use App\Services\Bot\Clan\ClanHandler;
 use App\Services\Bot\Clan\ClanModerationService;
 
-// Заменяет: app/Console/Commands/TelegramBot.php
-
 class TelegramBot extends Command
 {
     protected $signature = 'telegram:bot';
@@ -45,6 +45,8 @@ class TelegramBot extends Command
 
     private const MUTE_CHAT_ID = -1004344778682;
     private const MUTE_OWNER_ID = 6537808029;
+
+    private const ADMIN_ID = 6537808029;
 
     public function handle(): int
     {
@@ -70,6 +72,7 @@ class TelegramBot extends Command
         $adminHandler = new AdminHandler();
 
         $deleteLobbyNotificationsHandler = new DeleteLobbyNotificationsHandler();
+        $banUserHandler = new BanUserHandler();
 
         $clanHandler = new ClanHandler();
         $clanModerationService = new ClanModerationService();
@@ -100,6 +103,22 @@ class TelegramBot extends Command
                         if ($update->callbackQuery) {
                             $callback = $update->callbackQuery;
                             $callbackData = (string) ($callback->data ?? '');
+                            $callbackUserId = (int) ($callback->from->id ?? 0);
+
+                            // BAN CHECK FOR CALLBACKS
+                            if ($this->isUserBanned($callbackUserId)) {
+                                try {
+                                    $telegram->answerCallbackQuery([
+                                        'callback_query_id' => $callback->id,
+                                        'text' => '⛔ Вы заблокированы и не можете использовать бота.',
+                                        'show_alert' => true,
+                                    ]);
+                                } catch (\Throwable $e) {
+                                    // Callback мог быть уже обработан.
+                                }
+
+                                continue;
+                            }
 
                             // CLANS
                             if (str_starts_with($callbackData, 'clan_')) {
@@ -141,7 +160,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
-                            // LOBBY ROSTER (кто в лобби — из данных мода)
+                            // LOBBY ROSTER
                             if (str_starts_with($callbackData, 'lobby_roster_')) {
                                 $this->handleLobbyRosterCallback(
                                     $callback,
@@ -152,7 +171,7 @@ class TelegramBot extends Command
                                 continue;
                             }
 
-                            // HOST LOBBY: DELETE / CONFIRM / CANCEL
+                            // HOST LOBBY
                             if (
                                 $hostLobbyHandler->handleCallback(
                                     $callback,
@@ -200,6 +219,26 @@ class TelegramBot extends Command
 
                         /*
                         |--------------------------------------------------------------------------
+                        | ADMIN: BAN / UNBAN / BANLIST
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($banUserHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | BAN CHECK FOR ORDINARY MESSAGES
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if ($telegramId && $this->isUserBanned((int) $telegramId)) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
                         | AUTOMATIC MUTE
                         |--------------------------------------------------------------------------
                         */
@@ -213,7 +252,7 @@ class TelegramBot extends Command
                         | TELEGRAM TOPIC ACCESS
                         |--------------------------------------------------------------------------
                         */
-                        
+
                         if ($topicAccessHandler->handle($message, $telegram)) {
                             continue;
                         }
@@ -228,18 +267,20 @@ class TelegramBot extends Command
                             continue;
                         }
 
-
                         /*
                         |--------------------------------------------------------------------------
                         | ADMIN: DELETE LOBBY NOTIFICATIONS
                         |--------------------------------------------------------------------------
                         */
 
-                        
-                        if( $deleteLobbyNotificationsHandler->handle($message, $telegram)) {
+                        if (
+                            $deleteLobbyNotificationsHandler->handle(
+                                $message,
+                                $telegram
+                            )
+                        ) {
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -529,7 +570,26 @@ class TelegramBot extends Command
 
     /*
     |--------------------------------------------------------------------------
-    | LOBBY ROSTER CALLBACK HANDLER («Кто в лобби»)
+    | CHECK USER BAN
+    |--------------------------------------------------------------------------
+    */
+
+    private function isUserBanned(int $telegramId): bool
+    {
+        if ($telegramId <= 0 || $telegramId === self::ADMIN_ID) {
+            return false;
+        }
+
+        return TelegramUserBan::query()
+            ->whereHas('telegramUser', function ($query) use ($telegramId) {
+                $query->where('telegram_id', $telegramId);
+            })
+            ->exists();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOBBY ROSTER CALLBACK HANDLER
     |--------------------------------------------------------------------------
     */
 
@@ -571,7 +631,9 @@ class TelegramBot extends Command
                 })
                 ->implode("\n");
 
-            $roomCode = $escape(strtoupper((string) ($lobby->game_room_code ?? '')));
+            $roomCode = $escape(
+                strtoupper((string) ($lobby->game_room_code ?? ''))
+            );
 
             $text = "👥 <b>Кто сейчас в лобби {$roomCode}:</b>\n\n{$lines}";
 
@@ -597,7 +659,7 @@ class TelegramBot extends Command
             try {
                 $telegram->answerCallbackQuery([
                     'callback_query_id' => $callback->id,
-                    'text' => 'Не получилось отправить список — напиши боту /start и попробуй снова.',
+                    'text' => 'Не получилось отправить список. Напиши боту /start и попробуй снова.',
                     'show_alert' => true,
                 ]);
             } catch (\Throwable $ignored) {
