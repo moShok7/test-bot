@@ -30,11 +30,6 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         return [5, 15, 30];
     }
 
-    /**
-     * Передаются ID записей TelegramUser, не Telegram chat ID.
-     *
-     * @param array<int, int> $telegramUserIds
-     */
     public function __construct(
         public int $lobbyId,
         public ?int $creatorTelegramId,
@@ -42,6 +37,23 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         public array $telegramUserIds,
     ) {
         $this->onQueue('telegram');
+    }
+
+    /**
+     * Проверяет, создал ли тот же участник более новое лобби
+     * с другим игровым кодом.
+     */
+    private function hasNewerLobby(Lobby $lobby): bool
+    {
+        if (!$lobby->creator_id || !$lobby->game_room_code) {
+            return false;
+        }
+
+        return Lobby::query()
+            ->where('creator_id', $lobby->creator_id)
+            ->where('id', '>', $lobby->id)
+            ->where('game_room_code', '!=', $lobby->game_room_code)
+            ->exists();
     }
 
     public function handle(Api $telegram): void
@@ -56,6 +68,17 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
             Log::info('Личное уведомление пропущено: лобби недоступно', [
                 'lobby_id' => $this->lobbyId,
                 'status' => $lobby?->status,
+            ]);
+
+            return;
+        }
+
+        // Не отправляем старую рассылку, если уже создано новое лобби.
+        if ($this->hasNewerLobby($lobby)) {
+            Log::info('Старая личная рассылка отменена', [
+                'lobby_id' => $lobby->id,
+                'creator_id' => $lobby->creator_id,
+                'code' => $lobby->game_room_code,
             ]);
 
             return;
@@ -142,6 +165,17 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         $failed = 0;
 
         foreach ($users as $user) {
+
+            // Повторная проверка перед отправкой каждому пользователю.
+            if ($this->hasNewerLobby($lobby)) {
+                Log::info('Старая личная рассылка остановлена', [
+                    'lobby_id' => $lobby->id,
+                    'creator_id' => $lobby->creator_id,
+                ]);
+
+                break;
+            }
+
             // Проверяем, не играет ли пользователь в другом активном лобби.
             $isActive = LobbyPlayer::query()
                 ->where('telegram_user_id', $user->id)
@@ -155,7 +189,7 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
                 continue;
             }
 
-            // Проверка уже отправленного уведомления.
+            // Проверяем уже отправленное уведомление.
             $alreadySent = LobbyNotification::query()
                 ->where('lobby_id', $lobby->id)
                 ->where('telegram_user_id', $user->id)
@@ -186,6 +220,24 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
                     );
                 }
 
+                // Пока отправлялось сообщение, могло появиться новое лобби.
+                if ($this->hasNewerLobby($lobby)) {
+                    try {
+                        $telegram->deleteMessage([
+                            'chat_id' => $user->telegram_id,
+                            'message_id' => $messageId,
+                        ]);
+                    } catch (Throwable $e) {
+                        Log::warning('Не удалось удалить устаревшее сообщение', [
+                            'telegram_id' => $user->telegram_id,
+                            'message_id' => $messageId,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+
+                    break;
+                }
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => $user->id,
@@ -196,8 +248,6 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
 
                 $sent++;
 
-                // Закрепление необязательно. Ошибка закрепления
-                // не влияет на успешную отправку сообщения.
                 try {
                     $telegram->pinChatMessage([
                         'chat_id' => $user->telegram_id,
@@ -212,10 +262,10 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
                         'error' => $e->getMessage(),
                     ]);
                 }
+
             } catch (Throwable $e) {
                 $failed++;
 
-                // Ошибка одного пользователя не прерывает пакет.
                 Log::warning('Не удалось отправить личное уведомление', [
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => $user->id,

@@ -53,6 +53,131 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
         $this->onQueue('telegram');
     }
 
+    /**
+     * Проверяет, создал ли тот же участник более новое лобби
+     * с другим игровым кодом.
+     */
+    private function hasNewerLobby(Lobby $lobby): bool
+    {
+        if (!$lobby->creator_id || !$lobby->game_room_code) {
+            return false;
+        }
+
+        return Lobby::query()
+            ->where('creator_id', $lobby->creator_id)
+            ->where('id', '>', $lobby->id)
+            ->where('game_room_code', '!=', $lobby->game_room_code)
+            ->exists();
+    }
+
+    /**
+     * Удаляет одно отправленное сообщение.
+     */
+    private function deleteTelegramMessage(
+        Api $telegram,
+        UserTelegramService $userTelegram,
+        string $chatId,
+        int $messageId,
+        string $chatType
+    ): void {
+        if ($chatType === 'mtproto_group') {
+            $userTelegram->deleteMessage(
+                $chatId,
+                $messageId,
+                'supergroup'
+            );
+
+            return;
+        }
+
+        $telegram->deleteMessage([
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+        ]);
+    }
+
+    /**
+     * Удаляет уведомления всех предыдущих лобби этого создателя,
+     * если их игровой код отличается от текущего.
+     */
+    private function deletePreviousCreatorNotifications(
+        Api $telegram,
+        UserTelegramService $userTelegram,
+        Lobby $currentLobby
+    ): void {
+        if (
+            !$currentLobby->creator_id ||
+            !$currentLobby->game_room_code
+        ) {
+            return;
+        }
+
+        $notifications = LobbyNotification::query()
+            ->whereHas('lobby', function ($query) use ($currentLobby) {
+                $query
+                    ->where('creator_id', $currentLobby->creator_id)
+                    ->where('id', '!=', $currentLobby->id)
+                    ->where(
+                        'game_room_code',
+                        '!=',
+                        $currentLobby->game_room_code
+                    );
+            });
+
+        $deletedCount = 0;
+        $failedCount = 0;
+
+        $notifications->chunkById(100, function ($items) use (
+            $telegram,
+            $userTelegram,
+            &$deletedCount,
+            &$failedCount
+        ) {
+            foreach ($items as $notification) {
+                try {
+                    if (
+                        empty($notification->chat_id) ||
+                        empty($notification->telegram_message_id)
+                    ) {
+                        $notification->delete();
+                        $deletedCount++;
+                        continue;
+                    }
+
+                    $this->deleteTelegramMessage(
+                        $telegram,
+                        $userTelegram,
+                        (string) $notification->chat_id,
+                        (int) $notification->telegram_message_id,
+                        $notification->chat_type
+                    );
+
+                    $notification->delete();
+                    $deletedCount++;
+
+                } catch (Throwable $e) {
+                    $failedCount++;
+
+                    Log::warning('Не удалось удалить старую рассылку создателя', [
+                        'notification_id' => $notification->id,
+                        'lobby_id' => $notification->lobby_id,
+                        'chat_id' => $notification->chat_id,
+                        'chat_type' => $notification->chat_type,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        });
+
+        Log::info('Очистка старых рассылок создателя завершена', [
+            'creator_id' => $currentLobby->creator_id,
+            'current_lobby_id' => $currentLobby->id,
+            'current_code' => $currentLobby->game_room_code,
+            'deleted_notifications' => $deletedCount,
+            'failed_notifications' => $failedCount,
+        ]);
+    }
+
     public function handle(
         Api $telegram,
         UserTelegramService $userTelegram,
@@ -68,6 +193,17 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
             Log::info('Рассылка пропущена: лобби недоступно', [
                 'lobby_id' => $this->lobbyId,
                 'status' => $lobby?->status,
+            ]);
+
+            return;
+        }
+
+        // Проверяем, не устарело ли лобби.
+        if ($this->hasNewerLobby($lobby)) {
+            Log::info('Рассылка отменена: уже создано новое лобби', [
+                'lobby_id' => $lobby->id,
+                'creator_id' => $lobby->creator_id,
+                'code' => $lobby->game_room_code,
             ]);
 
             return;
@@ -111,15 +247,28 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
             ? "👑 Создал: <a href=\"{$creatorLink}\"><b>{$safeCreatorName}</b></a>\n"
             : "👑 Создал: <b>{$safeCreatorName}</b>\n";
 
-        // Удаляем старые уведомления завершённых лобби.
+        // Удаляем предыдущие рассылки этого же создателя.
+        $this->deletePreviousCreatorNotifications(
+            $telegram,
+            $userTelegram,
+            $lobby
+        );
+
+        // Дополнительно удаляем уведомления завершённых лобби.
         $this->deleteOldNotifications($telegram, $userTelegram);
 
         $lobby->refresh();
 
         if (
             $lobby->status !== 'waiting' ||
-            empty($lobby->game_room_code)
+            empty($lobby->game_room_code) ||
+            $this->hasNewerLobby($lobby)
         ) {
+            Log::info('Рассылка остановлена после очистки', [
+                'lobby_id' => $lobby->id,
+                'status' => $lobby->status,
+            ]);
+
             return;
         }
 
@@ -181,6 +330,17 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
             ->get();
 
         foreach ($groups as $group) {
+
+            // Не отправляем старый код, если появилось новое лобби.
+            if ($this->hasNewerLobby($lobby)) {
+                Log::info('Групповая рассылка Bot API остановлена', [
+                    'lobby_id' => $lobby->id,
+                    'creator_id' => $lobby->creator_id,
+                ]);
+
+                return;
+            }
+
             $chatId = (string) $group->chat_id;
 
             if ($this->notificationExists(
@@ -210,6 +370,28 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                     );
                 }
 
+                // Проверяем, не устарело ли лобби во время отправки.
+                if ($this->hasNewerLobby($lobby)) {
+                    try {
+                        $this->deleteTelegramMessage(
+                            $telegram,
+                            $userTelegram,
+                            $chatId,
+                            (int) $messageId,
+                            'group'
+                        );
+                    } catch (Throwable $e) {
+                        Log::warning('Не удалось удалить устаревшее сообщение Bot API', [
+                            'lobby_id' => $lobby->id,
+                            'chat_id' => $chatId,
+                            'message_id' => $messageId,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+
+                    return;
+                }
+
                 LobbyNotification::create([
                     'lobby_id' => $lobby->id,
                     'telegram_user_id' => null,
@@ -231,6 +413,7 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                         'error' => $e->getMessage(),
                     ]);
                 }
+
             } catch (Throwable $e) {
                 Log::warning('Ошибка отправки в группу Bot API', [
                     'lobby_id' => $lobby->id,
@@ -248,6 +431,17 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
             $externalGroups = $userTelegramGroups->getExternalGroups();
 
             foreach ($externalGroups as $group) {
+
+                // Останавливаем старую рассылку.
+                if ($this->hasNewerLobby($lobby)) {
+                    Log::info('Групповая рассылка MTProto остановлена', [
+                        'lobby_id' => $lobby->id,
+                        'creator_id' => $lobby->creator_id,
+                    ]);
+
+                    return;
+                }
+
                 $chatId = (string) $group['chat_id'];
 
                 if ($this->notificationExists(
@@ -278,6 +472,28 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                         );
                     }
 
+                    // Проверяем актуальность после отправки.
+                    if ($this->hasNewerLobby($lobby)) {
+                        try {
+                            $this->deleteTelegramMessage(
+                                $telegram,
+                                $userTelegram,
+                                $chatId,
+                                (int) $messageId,
+                                'mtproto_group'
+                            );
+                        } catch (Throwable $e) {
+                            Log::warning('Не удалось удалить устаревшее MTProto сообщение', [
+                                'lobby_id' => $lobby->id,
+                                'chat_id' => $chatId,
+                                'message_id' => $messageId,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+
+                        return;
+                    }
+
                     LobbyNotification::create([
                         'lobby_id' => $lobby->id,
                         'telegram_user_id' => null,
@@ -299,6 +515,7 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                             'error' => $e->getMessage(),
                         ]);
                     }
+
                 } catch (Throwable $e) {
                     Log::warning('Ошибка отправки через MTProto', [
                         'lobby_id' => $lobby->id,
@@ -308,6 +525,7 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                     ]);
                 }
             }
+
         } catch (Throwable $e) {
             Log::error('Не удалось получить внешние группы MTProto', [
                 'lobby_id' => $lobby->id,
@@ -324,8 +542,6 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
 
     /**
      * Создаёт отдельные Jobs для личных уведомлений.
-     *
-     * @param int|null $creatorTelegramId
      */
     private function dispatchPrivateBatches(
         Lobby $lobby,
@@ -404,6 +620,7 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                 $query->whereIn('status', [
                     'finished',
                     'closed',
+                    'cancelled',
                 ]);
             })
             ->chunkById(100, function ($notifications) use (
@@ -419,18 +636,14 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                             continue;
                         }
 
-                        if ($notification->chat_type === 'mtproto_group') {
-                            $userTelegram->deleteMessage(
-                                $notification->chat_id,
-                                (int) $notification->telegram_message_id,
-                                'supergroup'
-                            );
-                        } else {
-                            $telegram->deleteMessage([
-                                'chat_id' => $notification->chat_id,
-                                'message_id' => $notification->telegram_message_id,
-                            ]);
-                        }
+                        $this->deleteTelegramMessage(
+                            $telegram,
+                            $userTelegram,
+                            (string) $notification->chat_id,
+                            (int) $notification->telegram_message_id,
+                            $notification->chat_type
+                        );
+
                     } catch (Throwable $e) {
                         Log::warning('Не удалось удалить старое уведомление', [
                             'notification_id' => $notification->id,
@@ -438,6 +651,7 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
                             'chat_type' => $notification->chat_type,
                             'error' => $e->getMessage(),
                         ]);
+
                     } finally {
                         $notification->delete();
                     }

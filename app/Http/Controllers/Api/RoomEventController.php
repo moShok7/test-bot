@@ -40,12 +40,12 @@ class RoomEventController extends Controller
         $validated = $request->validate([
             'action' => ['nullable', 'string', 'max:30'],
 
-            'status' => [
+         'status' => [
                 'sometimes',
                 'nullable',
                 'string',
-                'in:waiting,started,finished,closed',
-            ],
+                'in:waiting,countdown,started,finished,closed',
+                    ],
 
             'room_code' => [
                 'required',
