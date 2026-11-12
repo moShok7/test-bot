@@ -17,6 +17,7 @@ use App\Services\Bot\Send\SendHandler;
 
 use App\Services\Bot\SettingsHandler;
 use App\Services\Bot\AdminHandler;
+use App\Services\Bot\Admin\DeleteLobbyNotificationsHandler;
 use App\Services\Bot\GlobalChatHandler;
 use App\Services\Bot\TopicAccessHandler;
 use App\Services\Bot\UserInfoHandler;
@@ -67,6 +68,8 @@ class TelegramBot extends Command
         $playerLinkHandler = new PlayerLinkHandler();
         $topicAccessHandler = new TopicAccessHandler();
         $adminHandler = new AdminHandler();
+
+        $deleteLobbyNotificationsHandler = new DeleteLobbyNotificationsHandler();
 
         $clanHandler = new ClanHandler();
         $clanModerationService = new ClanModerationService();
@@ -222,6 +225,18 @@ class TelegramBot extends Command
                         */
 
                         if ($sendHandler->handle($message, $telegram)) {
+                            continue;
+                        }
+
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ADMIN: DELETE LOBBY NOTIFICATIONS
+                        |--------------------------------------------------------------------------
+                        */
+
+                        
+                        if( $deleteLobbyNotificationsHandler->handle($message, $telegram)) {
                             continue;
                         }
 
