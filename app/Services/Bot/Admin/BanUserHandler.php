@@ -17,25 +17,31 @@ class BanUserHandler
         $userId = (int) ($message->from->id ?? 0);
         $chatId = $message->chat->id ?? null;
 
-        // Поддерживаем команды с / и без него, регистр не важен.
         if (!preg_match(
-            '/^\/?(ban|unban|banlist)(?:@\w+)?(?:\s+(.+))?$/iu',
+            '/^\/?(ban|unban|banlist|бан|разбан|банлист)(?:@\w+)?(?:\s+(.+))?$/iu',
             $text,
             $matches
         )) {
             return false;
         }
 
-        // Только владелец может управлять банами.
+        // Команды управления банами доступны только владельцу.
         if ($userId !== self::ADMIN_ID) {
             return true;
         }
 
-        $command = mb_strtolower($matches[1]);
+        $rawCommand = mb_strtolower($matches[1], 'UTF-8');
+
+        $command = match ($rawCommand) {
+            'ban', 'бан' => 'ban',
+            'unban', 'разбан' => 'unban',
+            'banlist', 'банлист' => 'banlist',
+            default => null,
+        };
+
         $target = trim($matches[2] ?? '');
 
         try {
-            // СПИСОК БАНОВ
             if ($command === 'banlist') {
                 return $this->showBanList($telegram, $chatId);
             }
@@ -48,7 +54,7 @@ class BanUserHandler
                         "Примеры:\n" .
                         "БАН 123456789\n" .
                         "бан @username\n" .
-                        "разбан 123456789\n" .
+                        "РАЗБАН 123456789\n" .
                         "банлист",
                 ]);
 
@@ -66,7 +72,6 @@ class BanUserHandler
                 return true;
             }
 
-            // Не разрешаем забанить самого себя.
             if ((int) $user->telegram_id === self::ADMIN_ID) {
                 $telegram->sendMessage([
                     'chat_id' => $chatId,
@@ -76,9 +81,8 @@ class BanUserHandler
                 return true;
             }
 
-            // BAN
             if ($command === 'ban') {
-                $ban = TelegramUserBan::updateOrCreate(
+                TelegramUserBan::updateOrCreate(
                     [
                         'telegram_user_id' => $user->id,
                     ],
@@ -94,14 +98,17 @@ class BanUserHandler
                         "🔨 <b>Пользователь заблокирован</b>\n\n" .
                         "ID: <code>{$user->telegram_id}</code>\n" .
                         'Username: @' .
-                        ($user->username ?: 'не указан'),
+                        htmlspecialchars(
+                            $user->username ?: 'не указан',
+                            ENT_QUOTES | ENT_SUBSTITUTE,
+                            'UTF-8'
+                        ),
                     'parse_mode' => 'HTML',
                 ]);
 
                 return true;
             }
 
-            // UNBAN
             if ($command === 'unban') {
                 $deleted = TelegramUserBan::where(
                     'telegram_user_id',
@@ -137,9 +144,6 @@ class BanUserHandler
         return true;
     }
 
-    /**
-     * Поиск пользователя по Telegram ID или username.
-     */
     private function findUser(string $target): ?TelegramUser
     {
         $target = trim($target);
@@ -155,13 +159,10 @@ class BanUserHandler
 
         return TelegramUser::whereRaw(
             'LOWER(username) = ?',
-            [mb_strtolower($username)]
+            [mb_strtolower($username, 'UTF-8')]
         )->first();
     }
 
-    /**
-     * Вывод списка заблокированных пользователей.
-     */
     private function showBanList(Api $telegram, $chatId): bool
     {
         $bans = TelegramUserBan::with('telegramUser')
@@ -178,7 +179,11 @@ class BanUserHandler
             }
 
             $username = $user->username
-                ? '@' . $user->username
+                ? '@' . htmlspecialchars(
+                    $user->username,
+                    ENT_QUOTES | ENT_SUBSTITUTE,
+                    'UTF-8'
+                )
                 : 'без username';
 
             $lines[] =
@@ -187,20 +192,12 @@ class BanUserHandler
                 "📅 " . $ban->created_at->format('d.m.Y H:i');
         }
 
-        if (empty($lines)) {
-            $telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => '📋 Список заблокированных пользователей пуст.',
-            ]);
-
-            return true;
-        }
-
         $telegram->sendMessage([
             'chat_id' => $chatId,
-            'text' =>
-                "🔨 <b>Заблокированные пользователи:</b>\n\n" .
-                implode("\n\n", $lines),
+            'text' => empty($lines)
+                ? '📋 Список заблокированных пользователей пуст.'
+                : "🔨 <b>Заблокированные пользователи:</b>\n\n" .
+                    implode("\n\n", $lines),
             'parse_mode' => 'HTML',
         ]);
 

@@ -114,7 +114,10 @@ class TelegramBot extends Command
                                         'show_alert' => true,
                                     ]);
                                 } catch (\Throwable $e) {
-                                    // Callback мог быть уже обработан.
+                                    Log::warning('Could not answer banned callback', [
+                                        'telegram_id' => $callbackUserId,
+                                        'error' => $e->getMessage(),
+                                    ]);
                                 }
 
                                 continue;
@@ -210,7 +213,7 @@ class TelegramBot extends Command
                         }
 
                         $text = trim((string) ($message->text ?? ''));
-                        $telegramId = $message->from->id ?? null;
+                        $telegramId = (int) ($message->from->id ?? 0);
                         $chatId = $message->chat->id ?? null;
 
                         if (!$chatId) {
@@ -233,7 +236,7 @@ class TelegramBot extends Command
                         |--------------------------------------------------------------------------
                         */
 
-                        if ($telegramId && $this->isUserBanned((int) $telegramId)) {
+                        if ($telegramId > 0 && $this->isUserBanned($telegramId)) {
                             continue;
                         }
 
@@ -580,11 +583,32 @@ class TelegramBot extends Command
             return false;
         }
 
-        return TelegramUserBan::query()
-            ->whereHas('telegramUser', function ($query) use ($telegramId) {
-                $query->where('telegram_id', $telegramId);
-            })
-            ->exists();
+        try {
+            $isBanned = TelegramUserBan::query()
+                ->join(
+                    'telegram_users',
+                    'telegram_users.id',
+                    '=',
+                    'telegram_user_bans.telegram_user_id'
+                )
+                ->where('telegram_users.telegram_id', $telegramId)
+                ->exists();
+
+            Log::info('BAN CHECK', [
+                'telegram_id' => $telegramId,
+                'banned' => $isBanned,
+            ]);
+
+            return $isBanned;
+
+        } catch (\Throwable $e) {
+            Log::error('User ban check failed', [
+                'telegram_id' => $telegramId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /*
