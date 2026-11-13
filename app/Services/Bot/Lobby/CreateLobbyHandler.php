@@ -7,11 +7,14 @@ use App\Models\TelegramUser;
 use App\Models\BotSession;
 use App\Models\Lobby;
 use App\Models\LobbyPlayer;
+use App\Services\Bot\Concerns\ChecksBan;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 
 class CreateLobbyHandler
 {
+    use ChecksBan;
+
     public function handle($message, Api $telegram): bool
     {
         $text = trim((string) ($message->text ?? ''));
@@ -26,6 +29,10 @@ class CreateLobbyHandler
 
         if (!$user) {
             return false;
+        }
+
+        if ($this->isBanned($user)) {
+            return true;
         }
 
         /*

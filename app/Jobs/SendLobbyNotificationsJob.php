@@ -561,7 +561,8 @@ class SendLobbyNotificationsJob implements ShouldQueue, ShouldBeUnique
 
         $query = TelegramUser::query()
             ->whereNotNull('telegram_id')
-            ->where('telegram_id', '>', 0);
+            ->where('telegram_id', '>', 0)
+            ->whereDoesntHave('ban');
 
         if ($creatorTelegramId) {
             $query->where('telegram_id', '!=', $creatorTelegramId);

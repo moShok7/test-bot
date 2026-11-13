@@ -62,6 +62,7 @@ class GlobalChatDeliveryBatchJob implements ShouldQueue
         $recipients = TelegramUser::query()
             ->whereIn('telegram_id', $this->telegramUserIds)
             ->where('chat_notifications', true)
+            ->whereDoesntHave('ban')
             ->get();
 
         $success = 0;

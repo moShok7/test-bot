@@ -148,7 +148,8 @@ class SendLobbyNotificationsBatchJob implements ShouldQueue
         $userQuery = TelegramUser::query()
             ->whereIn('id', $userIds)
             ->whereNotNull('telegram_id')
-            ->where('telegram_id', '>', 0);
+            ->where('telegram_id', '>', 0)
+            ->whereDoesntHave('ban');
 
         if ($this->creatorTelegramId) {
             $userQuery->where(

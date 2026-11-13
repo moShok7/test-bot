@@ -6,9 +6,12 @@ use App\Models\BotSession;
 use App\Models\TelegramUser;
 use App\Models\Lobby;
 use App\Models\PremierLobby;
+use App\Services\Bot\Concerns\ChecksBan;
 
 class SearchLobbyHandler
 {
+    use ChecksBan;
+
     public function handle($message, $telegram): bool
     {
         $text = trim((string) ($message->text ?? ''));
@@ -34,6 +37,10 @@ class SearchLobbyHandler
 
         if (!$telegramUser) {
             return false;
+        }
+
+        if($this->isBanned($telegramUser)){
+            return true;
         }
 
         // Сбрасываем незавершённую сессию создания лобби.

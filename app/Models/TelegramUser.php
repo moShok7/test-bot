@@ -67,4 +67,8 @@ class TelegramUser extends Model
             'telegram_user_id'
         );
     }
+    public function ban()
+        {
+            return $this->hasOne(\App\Models\TelegramUserBan::class, 'telegram_user_id');
+        }
 }
