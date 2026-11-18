@@ -10,3 +10,7 @@
 !storage/app/public/
 !storage/app/public/send/
 !storage/app/public/send/**
+
+# Launcher mod files
+!storage/app/public/launcher/
+!storage/app/public/launcher/**
