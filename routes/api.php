@@ -15,6 +15,9 @@ Route::get('/user', function (Request $request) {
 
 
 Route::get('/launcher/version', [LauncherController::class, 'version']);
+Route::get('/launcher/self-version', [LauncherController::class, 'selfVersion']);
+
+Route::get('/launcher/version', [LauncherController::class, 'version']);
 
 Route::post('/player-roster', [PlayerRosterController::class, 'store']);
 
