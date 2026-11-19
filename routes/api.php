@@ -6,6 +6,7 @@ use App\Http\Controllers\LauncherController;
 use App\Http\Controllers\PlayerLinkController;
 use App\Http\Controllers\Api\PlayerRosterController;
 use App\Http\Controllers\Api\TelegramAuthController;
+use App\Http\Controllers\Api\LauncherAuthController;
 use App\Http\Controllers\TelegramWebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -13,6 +14,8 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
+Route::get('/launcher/status/{token}', [LauncherAuthController::class, 'status']);
+Route::get('/launcher/me', [LauncherAuthController::class, 'me']);
 
 Route::get('/launcher/version', [LauncherController::class, 'version']);
 Route::get('/launcher/self-version', [LauncherController::class, 'selfVersion']);
