@@ -15,6 +15,7 @@ use App\Models\Lobby;
 use App\Services\Bot\link\PlayerLinkHandler;
 use App\Services\Bot\Send\SendHandler;
 
+use App\Services\Bot\LauncherLinkHandler;
 use App\Services\Bot\Admin\DeleteLobbyNotificationsHandler;
 use App\Services\Bot\Admin\BanUserHandler;
 
@@ -71,8 +72,10 @@ class TelegramBot extends Command
         $topicAccessHandler = new TopicAccessHandler();
         $adminHandler = new AdminHandler();
 
+        $launcherLinkHandler = new LauncherLinkHandler();
         $deleteLobbyNotificationsHandler = new DeleteLobbyNotificationsHandler();
         $banUserHandler = new BanUserHandler();
+
 
         $clanHandler = new ClanHandler();
         $clanModerationService = new ClanModerationService();
@@ -374,6 +377,37 @@ class TelegramBot extends Command
 
                         if (str_starts_with($text, '/start clan_')) {
                             $clanHandler->handleDeepLink($message, $telegram);
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | LAUNCHER TELEGRAM AUTH
+                        |--------------------------------------------------------------------------
+                        | Диплинк из лаунчера: https://t.me/{bot}?start=launcher_{token}
+                        | Telegram присылает это как "/start launcher_{token}" — захватываем
+                        | ТОЛЬКО хеш-токен после "launcher_" (32 hex-символа), не весь payload.
+                        */
+
+                        if (
+                            preg_match(
+                                '/^\/start(?:@\w+)?\s+launcher_([a-f0-9]{32})$/',
+                                $text,
+                                $matches
+                            )
+                        ) {
+                            $reply = $launcherLinkHandler->handleStartPayload(
+                                $telegramId,
+                                $matches[1]
+                            );
+
+                            if ($reply !== null) {
+                                $telegram->sendMessage([
+                                    'chat_id' => $chatId,
+                                    'text' => $reply,
+                                ]);
+                            }
+
                             continue;
                         }
 
