@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Cache;
  *   use App\Http\Controllers\Api\LauncherAuthController;
  *   Route::get('/launcher/status/{token}', [LauncherAuthController::class, 'status']);
  *   Route::get('/launcher/me', [LauncherAuthController::class, 'me']);
+ *   Route::post('/launcher/tfg', [LauncherAuthController::class, 'linkTfgPlayerId']);
  */
 class LauncherAuthController extends Controller
 {
@@ -75,6 +76,36 @@ class LauncherAuthController extends Controller
             'username' => $user->username,
             'tfg_player_id' => $user->tfg_player_id,
         ]);
+    }
+
+    /**
+     * Вызывается модом (не лаунчером!) в момент, когда он захватил TFGPlayerId
+     * локально в игре. Мод читает тот же Bearer-токен лаунчера из файла
+     * рядом с exe (см. SecureTokenStore / LaunchGameAsync) и шлёт сюда.
+     *
+     * Токен уже доказывает, что это тот самый telegram_id — отдельного
+     * кода вводить не нужно.
+     */
+    public function linkTfgPlayerId(Request $request)
+    {
+        $request->validate(['tfg_player_id' => 'required|string']);
+
+        $token = $request->bearerToken();
+        $telegramId = $token ? Cache::get('launcher_token:' . $token) : null;
+
+        if (! $telegramId) {
+            return response()->json(['message' => 'Токен недействителен'], 401);
+        }
+
+        $user = TelegramUser::query()->where('telegram_id', $telegramId)->first();
+
+        if (! $user) {
+            return response()->json(['message' => 'Пользователь не найден'], 401);
+        }
+
+        $user->update(['tfg_player_id' => $request->input('tfg_player_id')]);
+
+        return response()->json(['saved' => true]);
     }
 
     /** Опционально: отозвать доступ лаунчера вручную (например, по команде администратора в боте). */
