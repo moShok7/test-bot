@@ -22,6 +22,7 @@ class TelegramUser extends Model
         'game_skin',    
         'bio',
         'server',
+        'tfg_player_id',
 
         // Социальные сети
         'instagram',
