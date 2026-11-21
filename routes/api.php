@@ -14,6 +14,8 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
+
+Route::post('/launcher/tfg', [LauncherAuthController::class, 'linkTfgPlayerId']);
 Route::get('/launcher/status/{token}', [LauncherAuthController::class, 'status']);
 Route::get('/launcher/me', [LauncherAuthController::class, 'me']);
 
